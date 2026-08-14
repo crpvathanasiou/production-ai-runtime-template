@@ -32,7 +32,7 @@ Runtime application contracts and ports
     → implemented in app/ under approved runtime milestones — not by documentation work
 ```
 
-The current tree has the template architecture/governance documents under `.ai/`. Specialized `.ai/contracts/`, `.ai/operations/`, `.ai/projects/`, `.ai/skills/`, and `.ai/engineering/testing-strategy.md` are not present. Runtime `app/ports/` and `app/adapters/` packages are not present. Do not create them as placeholders, and do not invent a future runtime layout here.
+The current tree includes template architecture/governance plus specialized `.ai/contracts/`, `.ai/operations/`, `.ai/projects/` (`_template` only; no active project), `.ai/skills/`, and the remaining engineering strategy documents. Runtime `app/ports/` and `app/adapters/` packages are **not** present. Do not invent a future runtime layout here. Documentation of contracts is not Python contract implementation.
 
 ---
 
@@ -290,21 +290,23 @@ Root human entry for identity, local run, and quality commands. Identity is `pro
 
 ## `.ai/`
 
-Persistent human/AI engineering continuity layer. Present today:
+Persistent human/AI engineering continuity layer. **One** shared tool-neutral workspace. **One** canonical `handoff.md`.
 
 | Path | Role |
 | --- | --- |
 | `README.md` | Session entry point |
 | `quick-start.md` | Template project bootstrap |
-| `handoff.md` | Mutable continuation state |
-| `architecture/*` | Stable template architecture |
-| `engineering/engineering-principles.md` | Engineering standards |
-| `engineering/development-workflow.md` | ChatGPT/Cursor workflow |
-| `engineering/documentation-rules.md` | Documentation-impact rules |
+| `handoff.md` | Shared continuation state (next approved action) |
+| `architecture/*` | Stable template architecture, file map, deferred register |
+| `contracts/` | Agent behaviour, prompt lifecycle, tool-execution contracts |
+| `engineering/` | Principles, workflow, delivery method, testing, evaluation, security, documentation protocol |
+| `operations/` | Observability and error-handling strategy |
+| `projects/` | Project workspaces; `_template` only until an assignment is created |
+| `skills/` | Recurring review/planning procedures (not runtime) |
 
 **Role:** engineering / governance (not runtime)
 
-**Must not introduce:** empty placeholder trees, runtime code, or mutable status duplicated into architecture docs
+**Must not introduce:** tool-private handoff/status files, empty placeholder trees, runtime code, or mutable status duplicated into architecture docs
 
 **Change belongs here:** documentation/governance per approved milestone.
 

@@ -1,6 +1,16 @@
 # Development workflow
 
-Fixed governance lifecycle for this template. ChatGPT plans and reviews. Cursor implements only what the current milestone allows.
+Fixed governance lifecycle for this template: **roles, approvals, and milestone lifecycle**.
+
+This is not [`delivery-method.md`](delivery-method.md).
+
+| Document | Owns |
+| --- | --- |
+| **This file** | Who decides, one-milestone lifecycle, APPROVE / CORRECTION-ONLY |
+| [`delivery-method.md`](delivery-method.md) | Execution discipline **inside** an approved milestone |
+| [`documentation-rules.md`](documentation-rules.md) | Shared Documentation Synchronization Protocol |
+
+ChatGPT owns architecture, planning, review, and approval. Cursor is the controlled implementation executor.
 
 ## Lifecycle
 
@@ -82,7 +92,9 @@ Completion requires:
 3. correction cycle if required (still the same milestone)
 4. Git milestone commit only when ChatGPT asks for it
 
-`.ai/handoff.md` is updated to reflect current/last approved milestone as continuation state. It does not replace this workflow.
+`.ai/handoff.md` is the single shared continuation document (next approved action). It does not replace this workflow and is not proof that a Git commit exists.
+
+Documentation changes follow [`documentation-rules.md`](documentation-rules.md): Expected Documentation Impact before implementation, Actual Documentation Impact Reconciliation after, handoff last among documentation updates. Active-project `implementation-status.md` is updated only when an active project exists and is applicable.
 
 ## Cursor prompts
 

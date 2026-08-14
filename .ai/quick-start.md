@@ -2,109 +2,117 @@
 
 This is **project bootstrap guidance**. Ordinary Python/Poetry/Docker setup belongs in the root `README.md`. Do not treat this file as an install runbook.
 
-The seeded Customer Support Triage code is example implementation inside the template. Starting a new project does not mean extending that example by default. It means capturing the assignment, reviewing the template architecture, and activating only what the assignment justifies.
+The seeded Customer Support Triage code is example implementation. Starting a new project does not mean extending that example by default.
 
 ## Bootstrap workflow
 
 ```text
 start from template
         ↓
-create project workspace
+establish project workspace
         ↓
-capture assignment / context
+capture project-context
+        ↓
+capture expected / actual development environment
         ↓
 identify requirements, constraints, and unknowns
         ↓
-review template architecture
+assess security / evaluation requirements where relevant
         ↓
-review deferred capabilities
+inspect template architecture + deferred capabilities
         ↓
-activate only justified capabilities
+approve project architecture decisions
         ↓
-approve project architecture
+establish delivery plan
         ↓
 define one milestone
         ↓
-Cursor implementation under ChatGPT supervision
+Expected Documentation Impact
+        ↓
+controlled implementation
 ```
 
 ### 1. Start from the template
 
-Use this repository as the reusable baseline. Template rules in `.ai/architecture/` and `.ai/engineering/` apply unless a later approved template change supersedes them.
+Template rules in `.ai/architecture/` and `.ai/engineering/` apply unless a later approved template change supersedes them. Do not merge other repositories into the template.
 
-Do not copy architecture from another codebase into the template. Do not merge reference repositories.
+### 2. Establish the project workspace
 
-### 2. Create the project workspace
+Copy [`.ai/projects/_template/`](projects/_template/project-context.md) to `.ai/projects/<project>/`. See [`projects/README.md`](projects/README.md). Do not treat Customer Support Triage as the active project unless [`.ai/handoff.md`](handoff.md) says so.
 
-Project-specific knowledge belongs under `.ai/projects/<project>/`.
+### 3. Capture project-context
 
-Do not treat Customer Support Triage as the active project unless an approved project workspace says so. Assignment-specific decisions belong in the project workspace. They must not be written into template architecture documents as if they were universal.
+Fill `project-context.md`: goal, problem, deliverables, deadline, requirements, constraints, facts vs unknowns, assumptions, success and acceptance criteria.
 
-### 3. Capture assignment and context
+### 4. Capture expected / actual development environment
 
-Record, as project knowledge:
+Fill `development-environment.md` as operational **reference**. If it says X and the actual environment says Y:
 
-- what the system must do
-- who it serves
-- delivery constraints
-- provider/environment constraints
-- what is explicitly out of scope
+```text
+SURFACE DISCREPANCY
+```
 
-### 4. Identify requirements, constraints, and unknowns
+Do not redefine the template stack from that file.
 
-Separate:
-
-- hard requirements
-- constraints (compliance, latency, human review, side effects)
-- unknowns that block architecture approval
+### 5. Identify requirements, constraints, and unknowns
 
 Unknowns are not permission to speculate infrastructure.
 
-### 5. Review template architecture
+### 6. Assess security and evaluation
 
-Read:
+Use [`engineering/security-principles.md`](engineering/security-principles.md) and [`engineering/evaluation-strategy.md`](engineering/evaluation-strategy.md) where the assignment involves untrusted content or probabilistic AI behaviour. Project-specific threat/IAM/compliance work stays requirement-driven.
 
-- [`architecture/architecture.md`](architecture/architecture.md)
-- [`architecture/architecture-rules.md`](architecture/architecture-rules.md)
-- [`architecture/file-map.md`](architecture/file-map.md)
+### 7. Inspect template architecture and deferred capabilities
 
-The approved model is:
+Read [`architecture/architecture.md`](architecture/architecture.md), [`architecture/architecture-rules.md`](architecture/architecture-rules.md), [`architecture/deferred-capabilities.md`](architecture/deferred-capabilities.md).
+
+Approved model:
 
 ```text
 Client → FastAPI / Delivery Adapter → [optional LangGraph] → Application Core → Ports → outbound adapters
 ```
 
-FastAPI may also call the application core directly, without LangGraph. The seeded runtime does not yet implement that model.
+FastAPI may call the application core without LangGraph. The seeded runtime does not yet implement that model (`SURFACE DISCREPANCY` if treated as done).
 
-### 6. Review deferred capabilities
+Presence on the deferred register is not permission to implement.
 
-Read [`architecture/deferred-capabilities.md`](architecture/deferred-capabilities.md). Presence on that list is **not** permission to implement. A capability stays deferred until a real requirement and an approved project architecture decision activate it.
+### 8. Approve project architecture decisions
 
-### 7. Activate only justified capabilities
+Record choices and explicit deviations in `architecture-decisions.md`. Template invariants still apply.
 
-Activation requires:
+### 9. Establish delivery plan
 
-- a concrete assignment need
-- an expected architectural boundary
-- an explicit project decision
+Prospective milestones, gates, and validation expectations in `delivery-plan.md`. Not a progress ledger.
 
-Do not activate MCP, extra providers, checkpointing, RAG platforms, or other deferred items “for completeness.”
+### 10. Define one milestone
 
-### 8. Approve project architecture
+ChatGPT selects **one** milestone (allowed/forbidden files, contracts, DoD). See [`engineering/development-workflow.md`](engineering/development-workflow.md).
 
-ChatGPT records the project architecture decision under `.ai/projects/<project>/`. Template invariants still apply. Project choices that conflict with invariants require a template change, not a silent local override.
+### 11. Expected Documentation Impact
 
-### 9. Define one milestone
+Before implementation ([`engineering/documentation-rules.md`](engineering/documentation-rules.md)):
 
-ChatGPT selects **one** milestone with objective, allowed files, forbidden files, contracts, Definition of Done, and documentation impact. See [`engineering/development-workflow.md`](engineering/development-workflow.md).
+```text
+Expected Documentation Impact:
+NONE — <specific reason>
+```
 
-### 10. Cursor implementation under ChatGPT supervision
+or:
 
-Cursor implements only after ChatGPT explicitly requests a Cursor prompt for that milestone. Cursor does not choose the next milestone.
+```text
+Expected Documentation Impact:
+UPDATE
+- <document>
+```
+
+### 12. Controlled implementation
+
+Cursor implements only after an explicit Cursor prompt for that milestone ([`engineering/delivery-method.md`](engineering/delivery-method.md)). Cursor does not choose the next milestone. Next action lives only in [`.ai/handoff.md`](handoff.md).
 
 ## What not to do at bootstrap
 
 - Do not start runtime refactors during documentation/governance milestones.
-- Do not promote seeded Customer Support types, nodes, or prompts into template-wide contracts.
-- Do not create parallel replacements for existing components before adapting them.
+- Do not promote seeded Customer Support types into template-wide contracts.
+- Do not create parallel replacements before adapting existing components.
 - Do not treat LangGraph, LangSmith, Redis, or OpenAI as the application core.
+- Do not create tool-specific handoff files.

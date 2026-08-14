@@ -1,83 +1,73 @@
 # `.ai/` — Engineering Continuity Layer
 
-`.ai/` is the persistent human/AI engineering control plane for this repository. A new human, ChatGPT, or Cursor session starts here.
+`.ai/` is the persistent human/AI engineering control plane for this repository. A new human, ChatGPT, Cursor, or future AI engineering/review tool starts here.
 
-It records how this reusable template is governed: what is architecturally true, what is project-specific, what is current work, and what must not be invented. It is not application runtime code.
+There is **one** shared, tool-neutral `.ai/` workspace, **one** Documentation Synchronization Protocol ([`engineering/documentation-rules.md`](engineering/documentation-rules.md)), and **one** canonical [`.ai/handoff.md`](handoff.md). Do not create tool-specific parallel state (`cursor-handoff.md`, `chatgpt-status.md`, and similar).
 
-## Documentation authority
+It is not application runtime code.
 
-There are three authority classes. Do not mix them.
+## Documentation authority (by concern)
 
-| Class | Location | Changes when |
-| --- | --- | --- |
-| **Stable template knowledge** | `.ai/architecture/**`, `.ai/engineering/**`, `.ai/quick-start.md`, and other template-wide `.ai/` areas such as `contracts/`, `operations/`, and `skills/` when those documents exist | Only when the reusable template itself changes |
-| **Mutable project knowledge** | `.ai/projects/<project>/` | When a specific assignment decides something that must not become a template rule |
-| **Mutable continuation state** | `.ai/handoff.md` | When milestone, validation, blockers, or next approved action change |
+Do not use a single global ranking. Authority is by concern:
 
-`.ai/handoff.md` owns only current state. It does not redefine architecture.
-
-Project-specific decisions must never silently become template-wide rules. Template rules must never be rewritten in a project folder to avoid an inconvenient invariant.
-
-## Template vs project knowledge
-
-This repository is a **reusable production-oriented AI runtime template**. The Python tree contains a seeded Customer Support Triage example. That seed is useful code, not the approved reusable architecture.
-
-- **Template knowledge** applies to every future project started from this repository.
-- **Project knowledge** captures one assignment: requirements, constraints, justified capability activation, and project architecture decisions.
-- **Project-specific knowledge belongs under `.ai/projects/`**. Treat Customer Support Triage as seeded example implementation unless an approved project workspace names it as the active project.
-
-## Where architecture and governance live
-
-| Document | Responsibility |
+| Concern | Authority |
 | --- | --- |
-| [`architecture/architecture.md`](architecture/architecture.md) | Approved Minimal Target Architecture |
-| [`architecture/architecture-rules.md`](architecture/architecture-rules.md) | Normative architecture invariants |
-| [`architecture/file-map.md`](architecture/file-map.md) | Current repository areas and ownership |
-| [`architecture/deferred-capabilities.md`](architecture/deferred-capabilities.md) | Anti-overengineering register |
-| [`engineering/engineering-principles.md`](engineering/engineering-principles.md) | Fixed stack and engineering standards |
-| [`engineering/development-workflow.md`](engineering/development-workflow.md) | ChatGPT/Cursor milestone lifecycle |
-| [`engineering/documentation-rules.md`](engineering/documentation-rules.md) | Documentation-impact Definition of Done |
-| [`quick-start.md`](quick-start.md) | How a new project bootstraps from this template |
+| Architecture invariants | [`architecture/architecture-rules.md`](architecture/architecture-rules.md) |
+| Canonical architecture | [`architecture/architecture.md`](architecture/architecture.md) |
+| Contract domains | [`contracts/`](contracts/) |
+| Engineering policies / procedures | [`engineering/`](engineering/) |
+| Operational strategy | [`operations/`](operations/) |
+| Project requirements | `projects/<project>/project-context.md` |
+| Project operational reference | `projects/<project>/development-environment.md` |
+| Project architecture decisions | `projects/<project>/architecture-decisions.md` |
+| Intended delivery path | `projects/<project>/delivery-plan.md` |
+| Project execution ledger | `projects/<project>/implementation-status.md` |
+| **What am I allowed to do next?** | [`.ai/handoff.md`](handoff.md) only |
 
-Specialized template documentation, when present, lives under:
+Stable template knowledge changes only when the reusable template changes. Project knowledge must not silently become template rules. Handoff owns only current continuation state; it does not redefine architecture or prove that a Git commit exists (Git is factual for commits).
 
-- `.ai/contracts/` — specialized contract documentation
-- `.ai/operations/` — operations documentation
-- `.ai/projects/` — project workspaces
-- `.ai/skills/` — reusable skills
+## Template vs project
 
-Do not invent placeholders for absent areas. Current presence or absence is recorded only in [`.ai/handoff.md`](handoff.md).
+This repository is a reusable production-oriented AI runtime template. The Python tree contains a seeded Customer Support Triage example — useful code, not the approved reusable architecture.
 
-## Current milestone and continuation
+Project-specific knowledge belongs under [`.ai/projects/`](projects/README.md). Copy `_template`; do not treat the seed as an active project unless handoff names one.
 
-Read [`.ai/handoff.md`](handoff.md) for:
+## Normative vs factual — `SURFACE DISCREPANCY`
 
-- active project
-- current milestone
-- last approved milestone
-- validation status
-- blockers
-- next approved action
-- forbidden/unapproved actions
+Approved documentation is **what should be true**. Code, Git, configuration, environment, commands, and tests are **what currently is true**. If they disagree:
 
-Do not copy mutable status into this file.
+```text
+SURFACE DISCREPANCY
+```
 
-## ChatGPT / Cursor governance
+Do not infer implementation from docs, or approval from existing code.
 
-ChatGPT owns architecture, planning, contracts, milestone scope, review, and approval or correction-only follow-up.
+## Where things live
 
-Cursor is the controlled implementation executor. Cursor must not independently decide architecture, abstractions, dependencies, repository structure, scope expansion, opportunistic refactoring, deferred-capability activation, or continuation to another milestone.
+| Area | Responsibility |
+| --- | --- |
+| [`architecture/`](architecture/architecture.md) | Target architecture, invariants, file map, deferred capabilities |
+| [`contracts/`](contracts/agent-behavior-contract.md) | Agent behaviour, prompt lifecycle, tool execution |
+| [`engineering/`](engineering/engineering-principles.md) | Stack, workflow, delivery method, testing, evaluation, security, documentation protocol |
+| [`operations/`](operations/observability-strategy.md) | Observability and error-handling strategy |
+| [`projects/`](projects/README.md) | Per-assignment workspace (`_template` only until a project is created) |
+| [`skills/`](skills/README.md) | Recurring review/planning procedures (not runtime) |
+| [`handoff.md`](handoff.md) | Shared continuation state |
 
-A milestone is not complete because Cursor reports success. Completion requires ChatGPT review and an explicit **APPROVE** or **CORRECTION-ONLY** decision, then a Git milestone commit when instructed.
+## Continuation
 
-See [`engineering/development-workflow.md`](engineering/development-workflow.md).
+Read [`.ai/handoff.md`](handoff.md) for active project, current milestone, last approved milestone, validation, blockers, **next approved action**, and forbidden actions. Do not copy mutable status into this file.
+
+## ChatGPT / Cursor
+
+ChatGPT owns architecture, planning, contracts, milestone scope, review, and APPROVE / CORRECTION-ONLY. Cursor is the controlled implementation executor ([`engineering/development-workflow.md`](engineering/development-workflow.md), [`engineering/delivery-method.md`](engineering/delivery-method.md)). A milestone is not complete because Cursor reports success.
 
 ## Recommended reading order
 
+A new session should **not** read every `.ai/` file.
+
 1. `.ai/README.md` (this file)
 2. `.ai/handoff.md`
-3. active project documents when they exist
-4. `architecture/architecture.md`
-5. `architecture/architecture-rules.md`
-6. relevant engineering / contract / operations documents
-7. relevant reusable skill
+3. active project documents when present
+4. relevant architecture, contracts, engineering, operations
+5. relevant skill
