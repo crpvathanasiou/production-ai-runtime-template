@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import List
-
 from app.graph_state import GraphState
+from app.schemas import RetrievedDocument
 
 
 RISKY_REFUND_PATTERNS = [
@@ -32,12 +31,52 @@ def _contains_any(text: str, patterns: list[str]) -> list[str]:
     return [pattern for pattern in patterns if pattern in lowered]
 
 
+def _document_key(doc: RetrievedDocument) -> tuple[str, str]:
+    return (doc.source, doc.content)
+
+
+def _validate_grounding_provenance(
+    state: GraphState,
+    draft_related: list[RetrievedDocument],
+) -> list[str]:
+    """
+    Validate draft.related_documents against trusted runtime retrieved evidence.
+
+    LLM output does not establish provenance.
+    """
+    issues: list[str] = []
+    retrieved = state.retrieved_documents or []
+
+    if not retrieved:
+        if draft_related:
+            issues.append(
+                "Response draft cites related_documents without retrieved evidence "
+                "(fabricated or unproven provenance)."
+            )
+        return issues
+
+    if not draft_related:
+        issues.append("Response draft is not grounded in retrieved documents.")
+        return issues
+
+    trusted_keys = {_document_key(doc) for doc in retrieved}
+    for cited in draft_related:
+        if _document_key(cited) not in trusted_keys:
+            issues.append(
+                "Response draft cites a related document that does not match "
+                "retrieved evidence for this run."
+            )
+            break
+
+    return issues
+
+
 def validate_response_draft(state: GraphState) -> list[str]:
     """
     Returns a list of safety issues.
     Empty list means the draft passed v1 guardrails.
     """
-    issues: List[str] = []
+    issues: list[str] = []
 
     if state.response_draft is None:
         issues.append("Missing response draft.")
@@ -49,8 +88,7 @@ def validate_response_draft(state: GraphState) -> list[str]:
     if not response_text:
         issues.append("Response draft is empty.")
 
-    if not draft.related_documents:
-        issues.append("Response draft is not grounded in retrieved documents.")
+    issues.extend(_validate_grounding_provenance(state, draft.related_documents))
 
     if draft.unsupported_promises is True:
         issues.append("Response draft contains unsupported promises.")
@@ -74,7 +112,8 @@ def validate_response_draft(state: GraphState) -> list[str]:
     matched_confidence = _contains_any(response_text, OVERCONFIDENT_PATTERNS)
     if matched_confidence and (triage and triage.requires_human_approval):
         issues.append(
-            f"Draft uses overconfident language for a case requiring human approval: {matched_confidence}."
+            "Draft uses overconfident language for a case requiring "
+            f"human approval: {matched_confidence}."
         )
 
     return issues

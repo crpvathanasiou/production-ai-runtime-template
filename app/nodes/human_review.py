@@ -15,7 +15,11 @@ def _human_review_required(state: GraphState) -> bool:
     - shield flagged it
     - triage requires human approval
     - guardrails failed
+    - an upstream node already set needs_human_review
     """
+    if state.workflow_outcome == "needs_human_review":
+        return True
+
     if state.shield_result and state.shield_result.should_route_to_human:
         return True
 

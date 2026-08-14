@@ -19,13 +19,18 @@ def build_planner_system_prompt() -> str:
     Planning rules:
     1. The plan must be short, practical, and executable.
     2. The plan must reflect the triage result.
-    3. If the case needs knowledge lookup, include one or more retrieval steps.
-    4. If the case needs a response draft, include a response drafting step.
-    5. If the case is high-risk or requires human approval, include a human step.
-    6. The first pending step should be stored as current_step_id.
-    7. All steps must start with status="pending".
-    8. Keep the plan compact. Usually 2 to 5 steps are enough.
-    9. Use only the allowed owners:
+    3. Do not add retrieval merely by habit.
+    4. Use retrieval_agent only when a project/runtime has an active
+       retrieval source.
+    5. The current baseline has no active retrieval source; ordinary
+       current-baseline plans should not include retrieval_agent steps.
+    6. If answering safely requires external policy/FAQ/SOP knowledge that is not available, prefer a human review step rather than inventing knowledge.
+    7. Drafting may proceed directly when it can safely use only ticket/triage context.
+    8. If the case is high-risk or requires human approval, include a human step.
+    9. The first pending step should be stored as current_step_id.
+    10. All steps must start with status="pending".
+    11. Keep the plan compact. Usually 2 to 5 steps are enough.
+    12. Use only the allowed owners:
     - planner
     - triage_agent
     - retrieval_agent
@@ -34,9 +39,9 @@ def build_planner_system_prompt() -> str:
     - human
 
     Expected behavior examples:
-    - Billing/refund/security cases usually need retrieval before drafting.
-    - Simple informational cases may still need retrieval if policy grounding is useful.
+    - Ordinary low-risk informational cases: draft directly without retrieval.
     - High-risk or escalated cases should include a human step near the end.
+    - retrieval_agent remains a valid owner for a future project that activates retrieval.
 
     Return only structured output matching the provided schema.
     """.strip()
@@ -79,10 +84,13 @@ def build_planner_user_prompt(
     - reasoning_summary: {triage_result.reasoning_summary}
 
     Plan design guidance:
-    - Include retrieval if policy/context lookup is needed.
-    - Include drafting if a response should be prepared.
+    - Current baseline has no active retrieval source; do not include retrieval_agent by default.
+    - Include drafting if a response should be prepared from ticket/triage context.
+    - If required external policy/FAQ/SOP knowledge is unavailable,
+      prefer human review over invented knowledge.
     - Include a human step if triage or shield indicates human involvement.
     - Keep the plan short and realistic for a support workflow.
+    - retrieval_agent remains allowed for a future activated retrieval project.
 
     Return a structured SupportAgentState.
     """.strip()

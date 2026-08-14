@@ -47,6 +47,9 @@ def route_after_guardrails(state: GraphState) -> str:
     if not state.is_safe:
         return "human_review"
 
+    if state.workflow_outcome == "needs_human_review":
+        return "human_review"
+
     if state.triage_result and state.triage_result.requires_human_approval:
         return "human_review"
 

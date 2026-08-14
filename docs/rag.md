@@ -1,221 +1,136 @@
-Ναι, θα κάνουμε **RAG**.
-Απλώς αυτό που βλέπεις εδώ είναι το **query construction step** του RAG, όχι όλο το RAG.
+# Retrieval-shaped workflow vs RAG (current template)
 
-## Τι κάνει το `_build_retrieval_query`
+This document explains the seeded **orchestration seam** for retrieval-augmented
+generation. It does **not** claim that active RAG exists in the current template.
 
-Η `_build_retrieval_query(...)` δεν κάνει retrieval από μόνη της.
-
-Φτιάχνει ένα **search query string** από:
-
-* το αρχικό customer message
-* το `step.title`
-* το `step.description`
-* κάποια triage signals
-
-Παράδειγμα νοητικά:
-
-```python
-ticket = "I was charged twice and want a refund"
-step.title = "Retrieve refund policy"
-step.description = "Retrieve refund and billing policy relevant to the ticket"
-triage.issue_category = "refund"
-triage.intent = "complaint"
-```
-
-και μπορεί να βγάλει query σαν:
+## Current baseline
 
 ```text
-I was charged twice and want a refund Retrieve refund policy Retrieve refund and billing policy relevant to the ticket refund complaint ...
+repository knowledge corpus     → NONE
+active retrieval backend        → NONE
+active local keyword retrieval  → NONE
+active RAG                      → NONE
+RAG / vector retrieval          → DEFER
 ```
 
-Αυτό το query μετά δίνεται στο retrieval layer.
+`retrieve_relevant_documents(...)` is an **inert / placeholder** retrieval
+entrypoint. It preserves the seed workflow call site and currently returns `[]`.
+
+So the code demonstrates:
+
+**retrieval workflow shape / seam**
+
+not:
+
+**a complete working RAG system**
+
+Retrieval-shaped engineering is intentionally preserved so a later assignment
+can activate a project-specific backend without rebuilding orchestration.
 
 ---
 
-# Άρα πού είναι το RAG;
-
-Στο current flow, το RAG είναι σπασμένο σε 3 μέρη:
-
-## 1. Planner
-
-Αποφασίζει **αν χρειάζεται retrieval**.
-
-Παράγει step όπως:
-
-* `Retrieve refund policy`
-* `Retrieve shipping FAQ`
-
-## 2. `_build_retrieval_query`
-
-Μετατρέπει την απόφαση του planner σε **πρακτικό query**.
-
-## 3. `retrieve_relevant_documents(...)`
-
-Κάνει το actual retrieval από τη local knowledge base.
-
-Και μετά αυτά τα documents μπαίνουν στο:
-
-## 4. Response drafting
-
-Το LLM φτιάχνει απάντηση με βάση τα retrieved docs.
-
-Αυτό είναι ακριβώς το μοτίβο **Retrieval-Augmented Generation**.
-
----
-
-# Με μία πρόταση
-
-Το `_build_retrieval_query` είναι το **Q** στο RAG pipeline.
-Δεν είναι ούτε το retrieve ούτε το generate.
-
----
-
-# Πιο αναλυτικά: τι είναι το RAG στο project σας
-
-Για το tutorial σας, το RAG σημαίνει:
-
-1. έχουμε μικρό corpus γνώσης
-
-   * π.χ. `faq.md`, `refund_policy.md`, `security_policy.md`
-
-2. όταν το plan λέει ότι χρειάζεται γνώση,
-   φτιάχνουμε query
-
-3. ψάχνουμε σχετικά docs/snippets
-
-4. τα περνάμε στο drafting prompt
-
-5. το response γίνεται **augmented** από external context
-
-Αυτό είναι RAG, έστω και σε **μικρό / local / non-vector** form.
-
----
-
-# Γιατί δεν βλέπεις “βαρύ RAG”
-
-Γιατί έχουμε συνειδητά επιλέξει:
-
-* **small RAG**
-* **όχι vector DB**
-* **όχι hybrid search**
-* **όχι embeddings pipeline**
-* **tutorial-friendly implementation**
-
-Άρα το current RAG είναι:
-
-**planner-driven local retrieval + grounded drafting**
-
-και όχι:
-
-* chunking
-* embedding indexing
-* semantic retrieval stack
-* reranking
-
----
-
-# Το `_build_retrieval_query` γιατί χρειάζεται;
-
-Γιατί ο planner δεν πρέπει να ξέρει τις λεπτομέρειες του retrieval implementation.
-
-Ο planner λέει:
-
-> “χρειάζομαι retrieval για refund policy”
-
-Ο executor πρέπει να το κάνει actionable.
-
-Η `_build_retrieval_query` λοιπόν παίρνει:
-
-* business context
-* step context
-* triage context
-
-και φτιάχνει ένα query που μπορεί να χρησιμοποιήσει ο retrieval service.
-
----
-
-# Παράδειγμα end-to-end
-
-## Planner output
-
-```python
-PlanStep(
-    step_id="step_retrieve_refund_policy",
-    title="Retrieve refund policy",
-    description="Retrieve refund and billing policy relevant to the ticket.",
-    owner="retrieval_agent",
-)
-```
-
-## `_build_retrieval_query`
-
-βγάζει query όπως:
+## Workflow shape that still exists
 
 ```text
-I was charged twice and want a refund Retrieve refund policy Retrieve refund and billing policy relevant to the ticket refund complaint Refund-related complaint requiring careful handling
+planner
+  → retrieval decision (retrieval_agent step) [optional / future-activated]
+  → query construction (_build_retrieval_query)
+  → retrieval entrypoint (retrieve_relevant_documents)
+  → optional retrieved_documents in state
+  → response drafting
 ```
 
-## `retrieve_relevant_documents(query=...)`
+### Current-baseline planner behavior
 
-επιστρέφει π.χ.:
+Ordinary current-baseline plans should **not** request retrieval by default.
+If required external policy/FAQ/SOP knowledge is unavailable, prefer human
+review rather than inventing knowledge. Drafting may proceed directly from
+ticket/triage context. `retrieval_agent` remains a valid owner for a future
+project that activates retrieval.
 
-* `refund_policy.md`
-* `billing_faq.md`
+### When a retrieval step is actually requested
 
-## response drafting
+```text
+retrieval_agent step
+        ↓
+_build_retrieval_query(...)
+        ↓
+retrieve_relevant_documents(...)
+        ↓
+documents returned?
 
-χρησιμοποιεί αυτά τα docs για να φτιάξει grounded draft.
+YES → retrieval step completed
+    → state.retrieved_documents populated
+    → draft may use retrieved documents
+    → grounding provenance is validated
 
-Αυτό είναι το RAG.
-
----
-
-# Άρα τι κάνει ακριβώς η `_build_retrieval_query`;
-
-Λειτουργικά κάνει:
-
-* **query formulation**
-* **query enrichment**
-* **bridging from planner step to retrieval service**
-
----
-
-# Είναι αρκετό έτσι;
-
-Για v1, ναι.
-
-Γιατί:
-
-* είναι explainable
-* είναι deterministic
-* είναι απλό να τεσταριστεί
-* ταιριάζει με local KB tutorial
+NO  → retrieval step failed ("Retrieval returned no documents.")
+    → workflow_outcome = needs_human_review
+    → executor MAY still create a cautious draft for human review
+    → must NOT silently complete as successful retrieval
+```
 
 ---
 
-# Τι μπορεί να βελτιωθεί αργότερα
+## What `_build_retrieval_query` does
 
-Αν θες v2 ή πιο ώριμο retrieval, τότε μπορείς να κάνεις:
+`_build_retrieval_query(...)` does **not** retrieve documents.
 
-* καλύτερο query rewriting
-* mapping `issue_category -> likely docs`
-* chunk-level retrieval αντί full-file retrieval
-* scoring improvement
-* BM25 / TF-IDF
-* metadata filtering
-* later embeddings
-
-Αλλά για το scope που έχουμε τώρα, η `_build_retrieval_query` είναι σωστή πρώτη προσέγγιση.
+It builds a **search query string** from ticket / step / triage context and
+passes it to the retrieval entrypoint.
 
 ---
 
-# Το πιο σημαντικό takeaway
+## Drafting
 
-**Ναι, κάνετε RAG ήδη.**
-Απλώς το `_build_retrieval_query` είναι μόνο ένα μικρό υπο-βήμα του RAG pipeline.
+**With retrieved evidence**
 
-Η πλήρης ακολουθία είναι:
+- grounded drafting path
+- `related_documents` may cite a subset of actual retrieved documents
+- inventing sources is forbidden
 
-**planner decides retrieval → build retrieval query → retrieve relevant docs → use docs in response generation**
+**Without retrieved evidence**
 
-Αν θέλεις, στο επόμενο μήνυμα μπορώ να σου κάνω ένα **μικρό diagram μόνο για το RAG flow** μέσα στο project.
+- cautious non-corpus-grounded draft
+- `related_documents` must be `[]`
+- no claim of corpus grounding
+- no invented policy/FAQ/SOP facts
+
+---
+
+## Guardrails
+
+- grounding is required only when retrieved evidence exists
+- model citations must match actual `state.retrieved_documents`
+- fabricated/mismatched `related_documents` fail validation
+- empty `related_documents` is valid when no retrieval evidence existed
+
+---
+
+## How this relates to RAG
+
+**Retrieval-Augmented Generation**, when activated, would mean a real retrieval
+source exists, documents are retrieved, and those documents augment generation.
+
+The current seed preserves the orchestration seam and contracts for that path.
+It does **not** implement active RAG.
+
+```text
+retrieval-shaped workflow contract / seam exists
+        ≠
+retrieval implementation is active
+        ≠
+RAG is active
+```
+
+RAG / vector retrieval remains **DEFER**.
+
+---
+
+## Takeaway
+
+* The seed preserves the **orchestration seam** for future retrieval/RAG.
+* The current retrieval entrypoint is **inert** and returns no documents.
+* No repository corpus is shipped and active RAG is not implemented.
+* Explicit retrieval returning zero documents is unmet retrieval, not success.
+* `_build_retrieval_query` is query formulation only — not retrieval and not RAG.

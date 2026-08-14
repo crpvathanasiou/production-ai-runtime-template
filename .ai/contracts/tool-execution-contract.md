@@ -99,7 +99,7 @@ See [`../architecture/deferred-capabilities.md`](../architecture/deferred-capabi
 
 ## SURFACE DISCREPANCY
 
-The seeded `execute_plan` path performs local retrieval and drafting inside a node, without `ToolRequest` / `ToolResult`. That is current runtime fact, not this contract.
+Current seed: `execute_plan` contains retrieval-shaped orchestration through the seeded retrieval entrypoint, which currently has no active retrieval source, plus response drafting inside the node.
 
 ```text
 SURFACE DISCREPANCY

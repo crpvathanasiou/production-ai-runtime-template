@@ -75,14 +75,9 @@ def _mark_step_pending(step: PlanStep) -> PlanStep:
 # The planner decides THAT retrieval is needed.
 # The executor decides HOW to turn that decision into a query.
 #
-# For tutorial v1, we build a simple query using:
-# - the customer message
-# - the planner step title
-# - the planner step description
-# - a few useful triage fields
+# This builds a simple query from workflow context. The retrieval entrypoint
+# currently has no active backend, so the call returns no documents.
 #
-# This is intentionally simple and explainable.
-
 # ticket = "I was charged twice and want a refund"
 # step.title = "Retrieve refund policy"
 # step.description = "Retrieve refund and billing policy relevant to the ticket"
@@ -123,25 +118,29 @@ def _get_next_pending_step_id(plan: list[PlanStep]) -> str | None:
     return None
 
 
-# Execute a retrieval step.
+# Execute a retrieval-shaped plan step.
 #
 # What happens here:
 # 1. Build a retrieval query from current workflow context
-# 2. Fetch relevant KB documents
-# 3. Save them into state.retrieved_documents
-# 4. Mark the step as completed
+# 2. Call the retrieval entrypoint
+# 3. Persist returned documents into state.retrieved_documents
+# 4. Mark the step completed when documents are returned
+# 5. Mark the step failed when an explicitly requested retrieval returns none
 #
 # Important:
 # The planner does NOT retrieve docs itself.
-# It only says retrieval should happen.
-# This function is where that plan becomes real execution.
+# It only says a retrieval step should run.
+# This function preserves that orchestration seam.
+# Zero documents for an explicit retrieval request is unmet retrieval, not success.
 async def _execute_retrieval_step(state: GraphState, step: PlanStep) -> tuple[PlanStep, int]:
     query = _build_retrieval_query(state, step)
     documents = retrieve_relevant_documents(query=query, max_documents=3)
 
-    # Save retrieved documents in graph state so downstream steps can use them.
-    # The response drafting step depends on this context.
     state.retrieved_documents = documents
+
+    if not documents:
+        updated_step = _mark_step_failed(step, "Retrieval returned no documents.")
+        return updated_step, 0
 
     result_summary = f"Retrieved {len(documents)} document(s)."
     updated_step = _mark_step_completed(step, result=result_summary)
@@ -208,7 +207,14 @@ async def _execute_response_step(state: GraphState, step: PlanStep) -> PlanStep:
         "used_documents": len(parsed.related_documents),
     }
 
-    return _mark_step_completed(step, result="Drafted grounded customer response.")
+    has_retrieved_context = bool(state.retrieved_documents)
+    result_summary = (
+        "Drafted grounded customer response."
+        if has_retrieved_context
+        else "Drafted customer response without retrieved context."
+    )
+
+    return _mark_step_completed(step, result=result_summary)
 
 
 # Main executor node.
@@ -259,7 +265,7 @@ async def execute_plan_node(state: GraphState) -> GraphState:
     # - response_agent steps
     # - human steps (kept pending)
     for step in state.agent_state.plan:
-        # Retrieval steps fetch supporting evidence from the knowledge base.
+        # Retrieval-shaped steps: build query → call entrypoint → store returned docs.
         if step.owner == "retrieval_agent" and step.status == "pending":
             try:
                 updated_step, docs_count = await _execute_retrieval_step(state, step)
@@ -292,16 +298,20 @@ async def execute_plan_node(state: GraphState) -> GraphState:
     state.agent_state.current_step_id = _get_next_pending_step_id(updated_plan)
 
     failed_steps = [step for step in updated_plan if step.status == "failed"]
-    human_steps = [step for step in updated_plan if step.owner == "human"]
+    pending_human_steps = [
+        step
+        for step in updated_plan
+        if step.owner == "human" and step.status == "pending"
+    ]
 
     # Decide the current workflow outcome after execution.
     #
-    # If something failed, we prefer a safe path toward human review.
-    # Otherwise the workflow stays "running" so downstream nodes can continue.
+    # Failed steps and unresolved human PlanSteps are explicit human-review gates.
+    # Only when neither applies does the workflow stay "running".
     if failed_steps:
         state.workflow_outcome = "needs_human_review"
-    elif human_steps:
-        state.workflow_outcome = "running"
+    elif pending_human_steps:
+        state.workflow_outcome = "needs_human_review"
     else:
         state.workflow_outcome = "running"
 

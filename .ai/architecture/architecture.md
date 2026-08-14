@@ -13,7 +13,7 @@ This document is the approved **target** architecture for the reusable template.
 - a Customer Support Triage LangGraph workflow (`input_shield` → `triage` → `planner` → `execute_plan` → `guardrails` → `human_review` → `finalize`)
 - OpenAI used directly through `app/llm/openai_wrapper.py`
 - prompt text built in Python modules under `app/prompts/`
-- local keyword retrieval over `knowledge_base/`
+- a seeded retrieval entrypoint / workflow seam (no repository-level knowledge corpus; no active retrieval backend)
 - LangSmith `@traceable` on selected calls and nodes
 
 The seed is useful. It is not `LLMPort`, `ExecutionContext`, portable prompt identity, or application-owned tool contracts. Do not document those as already implemented.
@@ -186,7 +186,7 @@ MCP / REST / DB tool adapters
 
 The LLM cannot perform side effects by itself. Any tool/side effect is an application-authorized `ToolRequest` that yields a typed `ToolResult`. Future execution boundaries and tool adapters are separate from these contracts. A generic `ControlledToolExecutor` implementation is deferred. MCP / REST / DB tool adapters are deferred.
 
-Current seed: no tool-request contracts; `execute_plan` performs local retrieval and response drafting inside the node.
+Current seed: no tool-request contracts; `execute_plan` contains retrieval-shaped orchestration through the seeded retrieval entrypoint (currently no active retrieval source) and response drafting inside the node.
 
 ### FastAPI as delivery adapter
 

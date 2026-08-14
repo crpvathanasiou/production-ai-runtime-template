@@ -1,89 +1,62 @@
-Τέλεια. Ο planner είναι πλέον σε **πολύ καλό σημείο**.
+# execute_plan_node (current semantics)
 
-Αυτό που απέδειξες με τα tests είναι ουσιαστικά το σωστό set για v1:
+The planner produces an executable plan. `execute_plan_node` executes supported
+steps and updates state.
 
-* **happy path** ✅
-* **high-risk / human-review plan** ✅
-* **failure recovery with fallback plan** ✅
+## What the node does
 
-Και το τελευταίο είναι αυτό που ανεβάζει πραγματικά την ποιότητα του node από “δουλεύει” σε **production-disciplined**.
+* reads `state.agent_state.plan`
+* executes steps serially
+* for a `retrieval_agent` step:
+  * builds a retrieval query
+  * invokes the retrieval entrypoint
+  * stores returned documents in `state.retrieved_documents`
+  * marks the step **completed** when documents are returned
+  * marks the step **failed** with `"Retrieval returned no documents."` when an
+    explicitly requested retrieval returns none
+* for a `response_agent` step:
+  * drafts a response
+  * with retrieved evidence → `"Drafted grounded customer response."`
+  * without retrieved evidence → `"Drafted customer response without retrieved context."`
+* updates step `status` / `result` / `error`
+* leaves `human` steps pending (not executed here); `current_step_id` points to the next pending step
+* if any step failed → `workflow_outcome = "needs_human_review"`
+* if a pending human PlanStep remains → `workflow_outcome = "needs_human_review"`
+* otherwise → `workflow_outcome = "running"`
 
-Το `planner.py` όπως είναι τώρα έχει σωστή ουσία:
+## Current baseline
 
-* σωστό contract με `shield_result` και `triage_result`
-* σωστό planner-specific model config
-* structured output σε `SupportAgentState`
-* normalization pass
-* fallback plan
-* logging / metadata / traceability
-* broad recovery path για operational failures
+* no repository-backed knowledge corpus is shipped
+* no active retrieval backend exists
+* `retrieve_relevant_documents(...)` currently returns `[]`
+* active RAG is not implemented
+* retrieval-shaped orchestration is intentionally preserved
 
-Δεν βλέπω κάτι σημαντικό που να χρειάζεται να ξανανοίξουμε τώρα.
+Therefore:
 
-## Άρα το επόμενο βήμα
+* ordinary current-baseline plans should not request retrieval by default
+* if a plan does request retrieval and the entrypoint returns none, that is
+  unmet retrieval / failed plan step, not false success
+* a cautious draft may still be produced for human review
 
-Η σωστή συνέχεια είναι:
+## Supported step owners in v1
 
-**`execute_plan_node`**
+* `retrieval_agent` — retrieval seam (may succeed when a backend returns docs)
+* `response_agent` — drafting
+* `human` — marker only; not executed here
 
-Όχι ακόμα `human_review`, γιατί τώρα θέλεις να αποδείξεις ότι:
+## Why this matters
 
-* το plan που παράγει ο planner είναι πράγματι executable
-* το retrieval αποφασίζεται από τον planner και εκτελείται downstream
-* το state ενημερώνεται σωστά βήμα-βήμα
+This preserves the RAG-ready surface:
 
-Αυτό είναι η καρδιά του “agentic” μέρους.
+```text
+Application/workflow
+    ↓
+retrieval boundary (retrieve_relevant_documents)
+    ↓
+project-specific backend (future)
+    ↓
+corpus/index (future)
+```
 
-## Τι πρέπει να κάνει το `execute_plan_node`
-
-Σε πρώτη εκδοχή, πρέπει να:
-
-* διαβάζει `state.agent_state.plan`
-* εκτελεί τα steps σειριακά
-* αν βρει retrieval step, να κάνει KB lookup
-* αν βρει response step, να κάνει draft
-* να ενημερώνει `status`, `result`, `error`
-* να γεμίζει `retrieved_documents` και `response_draft`
-* να αφήνει το `human` step ως pending, όχι να το “εκτελεί”
-
-Αυτό είναι αρκετό για v1.
-
-## Προτεινόμενη v1 συμπεριφορά
-
-Για να μην ανοίξουμε πολλά μαζί:
-
-* retrieval: simple local KB retrieval
-* response drafting: ένα async node-level LLM call
-* human step: μόνο marker στο plan
-* guardrail step: θα το χειριστεί ο ξεχωριστός `guardrails_node`
-
-Άρα ο `execute_plan_node` δεν θα κάνει τα πάντα.
-Θα κάνει μόνο όσα steps του αναλογούν operationally.
-
-## Η πιο σωστή σειρά τώρα
-
-1. ορίζουμε πώς αναγνωρίζεις retrieval / drafting / human steps
-2. φτιάχνουμε `execute_plan_node`
-3. μετά πάμε σε `guardrails_node`
-4. και μετά `human_review_node`
-
-Αν θέλεις, στο επόμενο μήνυμα ξεκινάω κατευθείαν με:
-
-* το contract του `execute_plan_node`
-* τα helper functions του
-* και το πρώτο implementation.
-
-----------------------------
-Ο στόχος του είναι:
-
-να διαβάζει το plan από state.agent_state.plan
-να εκτελεί τα βήματα που είναι δικά του
-να ενημερώνει step statuses
-να γεμίζει:
-state.retrieved_documents
-state.response_draft
-να αφήνει το human step για αργότερα
-να κρατά metadata / logging / recovery behavior
-
-
-
+without pretending the current template already has an active backend.

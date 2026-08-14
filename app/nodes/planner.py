@@ -56,42 +56,33 @@ def _build_fallback_plan(state: GraphState) -> SupportAgentState:
     """
     Safe fallback plan if planner generation fails.
     Keeps the workflow recoverable and reviewable.
-    """
-    requires_human = False
-    if state.triage_result:
-        requires_human = (
-            state.triage_result.requires_human_approval
-            or state.triage_result.requires_escalation
-        )
 
+    Current baseline has no active retrieval source, so fallback must not
+    invent an unfulfillable retrieval dependency.
+    """
     steps = [
         PlanStep(
-            step_id="step_retrieve_context",
-            title="Retrieve relevant support context",
-            description="Retrieve the most relevant policy, FAQ, or SOP context for this ticket.",
-            owner="retrieval_agent",
-            status="pending",
-        ),
-        PlanStep(
             step_id="step_draft_response",
-            title="Draft grounded response",
-            description="Draft a customer response grounded in the retrieved support context.",
+            title="Draft cautious response",
+            description=(
+                "Draft a cautious customer response using only ticket and triage "
+                "context. Do not assume external policy/FAQ corpus grounding."
+            ),
             owner="response_agent",
             status="pending",
         ),
+        PlanStep(
+            step_id="step_human_review",
+            title="Human review",
+            description=(
+                "Review the case and cautious draft before any final "
+                "customer-facing response."
+            ),
+            owner="human",
+            status="pending",
+            requires_human_approval=True,
+        ),
     ]
-
-    if requires_human:
-        steps.append(
-            PlanStep(
-                step_id="step_human_review",
-                title="Human review",
-                description="Review the case before any final customer-facing response.",
-                owner="human",
-                status="pending",
-                requires_human_approval=True,
-            )
-        )
 
     return SupportAgentState(
         plan=steps,

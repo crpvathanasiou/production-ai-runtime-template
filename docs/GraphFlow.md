@@ -139,6 +139,7 @@ guardrails_node(state)
   ▼
 route_after_guardrails(state)
   │
+  ├─ if workflow_outcome == needs_human_review -----► human_review_node(state)
   ├─ if not state.is_safe --------------------------► human_review_node(state)
   ├─ if state.triage_result.requires_human_approval ► human_review_node(state)
   ├─ if state.shield_result.should_route_to_human --► human_review_node(state)
@@ -177,14 +178,16 @@ PLAN
 
 ACT
   └─ execute_plan_node
-       ├─ retrieval step
-       └─ response drafting step
+       ├─ retrieval-shaped step (success if docs returned; fail if explicit retrieval returns none)
+       └─ response drafting step (grounded with evidence; cautious without)
 
 VALIDATE
   └─ guardrails_node
+       └─ provenance validated against state.retrieved_documents
 
 HUMAN-IN-THE-LOOP
   └─ human_review_node
+       └─ also triggered by upstream workflow_outcome = needs_human_review
 
 FINALIZE
   └─ finalize_node
@@ -224,7 +227,14 @@ input_shield_node
 1. input_shield_node validates the incoming ticket
 2. triage_node classifies the case
 3. planner_node produces the execution plan
-4. execute_plan_node executes retrieval and drafting steps
+4. execute_plan_node executes retrieval-shaped and drafting steps
+   - retrieval returning docs → completed
+   - explicit retrieval returning none → failed + needs_human_review
+   - pending human PlanStep remains pending → needs_human_review
+5. guardrails validates provenance against retrieved evidence
+6. route_after_guardrails preserves upstream needs_human_review
+7. human_review_node treats upstream needs_human_review as review_required
+8. finalize_node closes the run
 5. guardrails_node validates the drafted response
 6. human_review_node is called if needed
 7. finalize_node closes the workflow

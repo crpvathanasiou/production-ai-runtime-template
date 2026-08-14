@@ -1,26 +1,16 @@
-Καλύπτει 3 βασικά cases:
+# execute_plan tests (current semantics)
 
-retrieval step γεμίζει retrieved_documents
-response step γεμίζει response_draft
-failure στο response drafting οδηγεί σε failed step + needs_human_review
+Covers:
 
-Τι ελέγχουν αυτά
-
-Το πρώτο test αποδεικνύει ότι ένα retrieval step:
-
-εκτελείται
-γεμίζει retrieved_documents
-γίνεται completed
-
-Το δεύτερο αποδεικνύει ότι ένα response step:
-
-χρησιμοποιεί το LLM wrapper
-γεμίζει response_draft
-ενημερώνει metadata
-
-Το τρίτο αποδεικνύει resilience:
-
-αν αποτύχει το drafting
-το step σημαίνεται failed
-το workflow γυρίζει σε needs_human_review
-το human step μένει pending
+1. **Mocked retrieval success** — RAG-ready seam:
+   retrieval step populates `retrieved_documents` and completes.
+2. **Current inert entrypoint** — explicit retrieval returning `[]` fails the
+   retrieval step with `"Retrieval returned no documents."` and sets
+   `workflow_outcome = needs_human_review`. A cautious draft may still be created.
+3. **Grounded drafting** — with `state.retrieved_documents`, response result is
+   `"Drafted grounded customer response."`
+4. **No-retrieval drafting** — with empty retrieved evidence and
+   `related_documents = []`, result is
+   `"Drafted customer response without retrieved context."`
+5. **Drafting failure recovery** — failed response step + pending human step →
+   `needs_human_review`

@@ -79,13 +79,23 @@
     - διατρέχει το plan με τη σειρά
     - για κάθε retrieval_agent step:
         - χτίζει retrieval query
-        - κάνει local KB retrieval
-        - γράφει retrieved_documents
-        - αλλάζει το step status σε "completed"
+        - καλεί το retrieval entrypoint
+        - αν επιστραφούν documents:
+            - γράφει retrieved_documents
+            - step status = "completed"
+            - result = "Retrieved N document(s)."
+        - αν επιστραφεί [] για explicit retrieval request:
+            - retrieved_documents = []
+            - step status = "failed"
+            - error = "Retrieval returned no documents."
+            - result = None
+            - δεν θεωρείται successful retrieval
         - σε exception αλλάζει το step status σε "failed"
     - για κάθε response_agent step:
         - καλεί drafting LLM
         - γράφει response_draft
+        - με retrieved evidence: result = "Drafted grounded customer response."
+        - χωρίς retrieved evidence: result = "Drafted customer response without retrieved context."
         - αλλάζει το step status σε "completed"
         - σε exception αλλάζει το step status σε "failed"
     - για κάθε human step:
@@ -115,10 +125,18 @@
         - is_safe = False
         - safety_feedback = reason
         - workflow_outcome = "needs_human_review"
-    - αν λείπουν related_documents:
-        - is_safe = False
-        - safety_feedback περιγράφει missing grounding
-        - workflow_outcome = "needs_human_review"
+    - grounding / provenance:
+        - αν state.retrieved_documents είναι κενό και related_documents == []:
+            - grounding check περνάει
+        - αν state.retrieved_documents είναι κενό και related_documents έχει items:
+            - is_safe = False (fabricated/unproven provenance)
+            - workflow_outcome = "needs_human_review"
+        - αν state.retrieved_documents υπάρχει και related_documents == []:
+            - is_safe = False (missing grounding)
+            - workflow_outcome = "needs_human_review"
+        - αν related_documents περιέχει item που δεν ταιριάζει σε retrieved evidence:
+            - is_safe = False (mismatched citation)
+            - workflow_outcome = "needs_human_review"
     - αν unsupported_promises == True:
         - is_safe = False
         - workflow_outcome = "needs_human_review"
@@ -136,6 +154,7 @@
     - shield_result
     - triage_result
     - is_safe
+    - workflow_outcome
     - human_approved
     - human_comments
     - request_id
@@ -144,7 +163,8 @@
     - additional_metadata["human_review"]
   update rules:
     - πρώτα αποφασίζει αν όντως απαιτείται human review:
-        - όταν shield_result.should_route_to_human == True
+        - όταν workflow_outcome == "needs_human_review"
+        - ή shield_result.should_route_to_human == True
         - ή triage_result.requires_human_approval == True
         - ή is_safe == False
     - αν δεν απαιτείται human review:

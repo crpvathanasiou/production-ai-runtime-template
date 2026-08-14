@@ -38,11 +38,11 @@ The current tree includes template architecture/governance plus specialized `.ai
 
 ## `app/`
 
-**Current responsibility:** Python package for the seeded Customer Support Triage copilot: FastAPI process, LangGraph workflow, OpenAI calls, prompts, guardrails, and local retrieval.
+**Current responsibility:** Python package for the seeded Customer Support Triage copilot: FastAPI process, LangGraph workflow, OpenAI calls, prompts, guardrails, and a seeded retrieval entrypoint/seam (currently inert).
 
 **Role:** mixed (delivery + domain/example + adapter code in one tree)
 
-**Depends on:** FastAPI, Pydantic, LangGraph, OpenAI SDK, LangSmith, Redis client, local files
+**Depends on:** FastAPI, Pydantic, LangGraph, OpenAI SDK, LangSmith, Redis client
 
 **Must not introduce:** new runtime layers, extra providers, generic executors, or a parallel app package
 
@@ -102,7 +102,7 @@ Files: `input_shield_prompts.py`, `triage_prompts.py`, `planner_prompts.py`, `re
 
 Files: `input_shield.py`, `triage.py`, `planner.py`, `execute_plan.py`, `guardrails.py`, `human_review.py`, `finalize.py`
 
-**Current responsibility:** LangGraph node functions for the Customer Support workflow, including LLM calls, retrieval, routing-relevant flags, and terminal outcome helpers.
+**Current responsibility:** LangGraph node functions for the Customer Support workflow, including LLM calls, retrieval-shaped plan execution, routing-relevant flags, and terminal outcome helpers.
 
 **Role:** domain/example-specific driving/orchestration (should call application behaviour; currently owns much of it)
 
@@ -134,15 +134,15 @@ Files: `input_guardrails.py`, `response_guardrails.py`
 
 File: `retrieval_service.py`
 
-**Current responsibility:** local keyword scoring over `knowledge_base/*.md`. Tutorial-scale retrieval, not a vector RAG stack.
+**Current responsibility:** seeded retrieval extension point / entrypoint for the example workflow; currently no active retrieval backend and returns no documents. Not a vector RAG stack.
 
-**Role:** domain/example-specific (looks like an adapter to a local corpus)
+**Role:** domain/example-specific retrieval seam
 
-**Depends on:** filesystem, `RetrievedDocument` schema
+**Depends on:** `RetrievedDocument` schema
 
 **Must not introduce:** vector databases, embeddings pipelines, or generic tool execution
 
-**Change belongs here:** this seed’s retrieval only. RAG/vector storage is deferred.
+**Change belongs here:** this seed’s retrieval entrypoint only. RAG/vector storage is deferred.
 
 ---
 
@@ -213,20 +213,6 @@ File: `retrieval_service.py`
 **Must not introduce:** production behaviour, new runtime packages, or dependency changes to “make tests green” outside an approved milestone
 
 **Change belongs here:** tests for existing seed behaviour. Documentation/governance work does not modify tests.
-
----
-
-## `knowledge_base/`
-
-Markdown FAQs/policies for the support example (`shipping_faq.md`, `refund_policy.md`, etc.).
-
-**Role:** domain/example-specific content corpus
-
-**Depends on:** nothing in code except `retrieval_service.py` reading `*.md`
-
-**Must not introduce:** vector indexes or treating this folder as template documentation
-
-**Change belongs here:** example retrieval documents only.
 
 ---
 

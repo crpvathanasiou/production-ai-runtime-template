@@ -1,5 +1,6 @@
 import pytest
 
+from app.graph import route_after_guardrails
 from app.graph_state import GraphState
 from app.nodes.human_review import human_review_node
 from app.schemas import ShieldOutput, SupportTicket, TriageOutput
@@ -45,6 +46,62 @@ async def test_human_review_node_stays_pending_when_decision_not_provided():
 
 
 @pytest.mark.asyncio
+async def test_human_review_preserves_upstream_needs_human_review_signal():
+    """Upstream execution unmet-retrieval/review signal must not be erased."""
+    state = GraphState(
+        request_id="req-human-upstream-signal",
+        initial_ticket=SupportTicket(
+            customer_message="What is the refund policy?",
+            customer_metadata={},
+            order_account_metadata={},
+        ),
+        shield_result=ShieldOutput(
+            decision="allow",
+            risk_level="low",
+            categories=["valid_support_request"],
+            sanitized_message="What is the refund policy?",
+            should_route_to_human=False,
+            clarification_question=None,
+            reasoning="Valid support request.",
+        ),
+        triage_result=TriageOutput(
+            issue_category="refund",
+            intent="information_request",
+            urgency="low",
+            customer_tone="calm",
+            requires_escalation=False,
+            requires_human_approval=False,
+            reasoning_summary="Customer asks for refund policy information.",
+        ),
+        is_safe=True,
+        workflow_outcome="needs_human_review",
+        human_approved=None,
+        human_comments=None,
+    )
+
+    updated_state = await human_review_node(state)
+
+    assert updated_state.additional_metadata["human_review"]["review_required"] is True
+    assert updated_state.workflow_outcome == "needs_human_review"
+    assert updated_state.additional_metadata["human_review"]["review_status"] == "pending"
+
+
+def test_route_after_guardrails_preserves_needs_human_review():
+    state = GraphState(
+        request_id="req-route-needs-human",
+        initial_ticket=SupportTicket(
+            customer_message="What is the refund policy?",
+            customer_metadata={},
+            order_account_metadata={},
+        ),
+        is_safe=True,
+        workflow_outcome="needs_human_review",
+    )
+
+    assert route_after_guardrails(state) == "human_review"
+
+
+@pytest.mark.asyncio
 async def test_human_review_node_marks_completed_when_approved():
     state = GraphState(
         request_id="req-human-002",
@@ -72,7 +129,9 @@ async def test_human_review_node_marks_completed_when_approved():
     assert updated_state.workflow_outcome == "completed"
     assert "human_review" in updated_state.additional_metadata
     assert updated_state.additional_metadata["human_review"]["review_status"] == "approved"
-    assert updated_state.additional_metadata["human_review"]["human_comments"] == "Approved after reviewing billing context."
+    assert updated_state.additional_metadata["human_review"][
+        "human_comments"
+    ] == "Approved after reviewing billing context."
 
 
 @pytest.mark.asyncio
@@ -104,4 +163,6 @@ async def test_human_review_node_blocks_when_rejected():
     assert updated_state.workflow_outcome == "blocked"
     assert "human_review" in updated_state.additional_metadata
     assert updated_state.additional_metadata["human_review"]["review_status"] == "rejected"
-    assert updated_state.additional_metadata["human_review"]["human_comments"] == "Do not send this draft. Needs manual handling."
+    assert updated_state.additional_metadata["human_review"][
+        "human_comments"
+    ] == "Do not send this draft. Needs manual handling."

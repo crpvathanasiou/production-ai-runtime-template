@@ -234,7 +234,8 @@ workflow_outcome ∈ {
 
 * recoverable:
 
-  * γράψε fallback plan
+  * γράψε fallback plan (`step_draft_response` + `step_human_review`)
+  * το fallback **δεν** προσθέτει unfulfillable `retrieval_agent` step στο current baseline
   * θέσε `workflow_outcome = "needs_human_review"`
   * γράψε `planner_error`
 * non-recoverable:
@@ -293,26 +294,30 @@ workflow_outcome ∈ {
 * για `retrieval_agent` step:
 
   * χτίζει retrieval query
-  * κάνει retrieval
-  * γράφει `retrieved_documents`
-  * step → `completed`
+  * καλεί το retrieval entrypoint
+  * αν επιστραφούν documents → γράφει `retrieved_documents`, step → `completed`
+  * αν επιστραφεί `[]` για explicit retrieval request → step → `failed` με
+    `"Retrieval returned no documents."` (unmet retrieval, όχι false success)
   * σε exception → `failed`
 * για `response_agent` step:
 
   * φτιάχνει draft
   * γράφει `response_draft`
+  * με retrieved evidence → grounded result
+  * χωρίς retrieved evidence → cautious non-corpus-grounded result
   * step → `completed`
   * σε exception → `failed`
 * για `human` step:
 
-  * το αφήνει `pending`
+  * το αφήνει `pending` (δεν εκτελείται από execute_plan)
 * μετά:
 
   * ενημερώνει `current_step_id` με το επόμενο pending step
 * `workflow_outcome`:
 
   * `needs_human_review` αν υπάρχει failed step
-  * `running` αλλιώς
+  * `needs_human_review` αν υπάρχει pending human PlanStep
+  * `running` μόνο όταν δεν υπάρχουν failed steps ούτε pending human steps
 
 ### Failure behavior
 
@@ -370,10 +375,12 @@ workflow_outcome ∈ {
 
   * `is_safe = False`
   * `workflow_outcome = "needs_human_review"`
-* αν λείπει grounding (`related_documents`):
+* grounding / provenance against `state.retrieved_documents`:
 
-  * `is_safe = False`
-  * `workflow_outcome = "needs_human_review"`
+  * empty retrieved evidence + empty `related_documents` → grounding passes
+  * empty retrieved evidence + non-empty `related_documents` → fabricated provenance fail
+  * non-empty retrieved evidence + empty `related_documents` → missing grounding fail
+  * cited document not in retrieved evidence → mismatched citation fail
 * αν `unsupported_promises == True`:
 
   * `is_safe = False`
@@ -400,8 +407,9 @@ workflow_outcome ∈ {
 ### Routing note
 
 * δεν αποφασίζει μόνο του human review
-* ο graph router κοιτάζει:
+* ο graph router (`route_after_guardrails`) κοιτάζει:
 
+  * `workflow_outcome == "needs_human_review"`
   * `is_safe`
   * `triage_result.requires_human_approval`
   * `shield_result.should_route_to_human`
@@ -446,6 +454,11 @@ workflow_outcome ∈ {
 
   * `workflow_outcome = "running"`
   * `review_status = "not_required"`
+* review is required when any of:
+  * upstream `workflow_outcome == "needs_human_review"`
+  * shield routes to human
+  * triage requires human approval
+  * `is_safe is False`
 * αν απαιτείται αλλά `human_approved is None`:
 
   * `workflow_outcome = "needs_human_review"`
@@ -458,6 +471,9 @@ workflow_outcome ∈ {
 
   * `workflow_outcome = "blocked"`
   * `review_status = "rejected"`
+
+Graph routing (`route_after_guardrails`) must also preserve upstream
+`workflow_outcome == "needs_human_review"` by routing to `human_review`.
 
 ### Failure behavior
 

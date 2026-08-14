@@ -9,7 +9,11 @@
 Η λογική του node θα είναι:
 
 1. ελέγχει ότι υπάρχει `response_draft`
-2. ελέγχει ότι υπάρχουν `related_documents`
+2. ελέγχει provenance/grounding against `state.retrieved_documents`
+   - empty retrieved evidence + empty `related_documents` → valid
+   - empty retrieved evidence + fabricated citations → fail
+   - retrieved evidence present + empty citations → fail
+   - mismatched citations → fail
 3. ελέγχει το `unsupported_promises`
 4. κάνει μερικούς **policy-risk keyword checks**
 5. ενημερώνει:
@@ -18,6 +22,13 @@
    * `safety_feedback`
    * `workflow_outcome`
    * metadata/logging
+
+Σημαντικό:
+
+* grounding απαιτείται μόνο όταν υπάρχει retrieved evidence
+* model-invented `related_documents` δεν αποτελούν provenance
+* empty `related_documents` είναι έγκυρο όταν δεν υπήρχε retrieval evidence
+
 
 ---
 
@@ -75,8 +86,9 @@ def validate_response_draft(state: GraphState) -> list[str]:
     if not response_text:
         issues.append("Response draft is empty.")
 
-    if not draft.related_documents:
-        issues.append("Response draft is not grounded in retrieved documents.")
+    # Provenance is validated against state.retrieved_documents.
+    # Empty related_documents is valid when no retrieval evidence exists.
+    # See app/guardrails/response_guardrails.py for the current implementation.
 
     if draft.unsupported_promises is True:
         issues.append("Response draft contains unsupported promises.")
@@ -222,18 +234,14 @@ async def guardrails_node(state: GraphState) -> GraphState:
 
 ---
 
-# 6. Tests που πρέπει να γράψουμε μετά
+# 6. Tests that protect current grounding semantics
 
-Θα σου πρότεινα αμέσως μετά 3 tests:
-
-1. **pass case**
-   grounded response, no unsupported promises → `is_safe=True`
-
-2. **missing grounding case**
-   no related docs → `is_safe=False`, `needs_human_review`
-
-3. **risky refund/security wording case**
-   risky language → `is_safe=False`
+1. Grounded PASS — retrieved doc A cited exactly → safe
+2. No-retrieval PASS — empty retrieved evidence + empty related_documents → safe
+3. Missing grounding FAIL — retrieved evidence exists but draft cites nothing
+4. Fabricated citation FAIL — no retrieved evidence but draft invents documents
+5. Mismatched citation FAIL — retrieved A, draft cites B
+6. Risky refund wording FAIL remains tested
 
 ---
 
@@ -241,5 +249,3 @@ async def guardrails_node(state: GraphState) -> GraphState:
 
 Για να παραμείνει καθαρό το tutorial, αυτός ο deterministic guardrails layer είναι πολύ καλή βάση.
 Αργότερα, αν θέλεις, μπορούμε να προσθέσουμε **δεύτερο semantic validation layer με LLM** πάνω από αυτόν, όχι αντί για αυτόν.
-
-Αν θέλεις, στο επόμενο μήνυμα σου δίνω κατευθείαν το **`tests/nodes/test_guardrails.py`**.

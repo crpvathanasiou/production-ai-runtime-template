@@ -12,6 +12,16 @@
 
 Για v1, επειδή δεν έχουμε UI ή real review system, το πιο σωστό είναι να το κάνουμε **state-driven/manual-input friendly**.
 
+Review is required when any of:
+
+* upstream `workflow_outcome == "needs_human_review"`
+* shield routes to human
+* triage requires human approval
+* guardrails marked the draft unsafe (`is_safe is False`)
+
+Graph routing (`route_after_guardrails`) must also preserve upstream
+`needs_human_review` by sending the run to `human_review`.
+
 ---
 
 # Τι θα κάνει το `human_review_node` v1
@@ -22,6 +32,7 @@
 * `state.triage_result`
 * `state.response_draft`
 * `state.safety_feedback`
+* `state.workflow_outcome`
 * `state.additional_metadata`
 
 Και θα βασίζεται σε **manual review input** που θα υπάρχει στο state, π.χ.:

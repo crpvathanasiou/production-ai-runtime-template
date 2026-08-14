@@ -1,4 +1,21 @@
-## Για ticket τύπου refund/high risk, ένα λογικό output θα είναι περίπου:
+# Planner notes (current baseline)
+
+## Current-baseline planning
+
+* No active retrieval backend is shipped.
+* Ordinary low-risk plans should draft from ticket/triage context without
+  requesting retrieval by default.
+* If required external policy/FAQ/SOP knowledge is unavailable, prefer human
+  review rather than inventing knowledge.
+* `retrieval_agent` remains a valid owner for a future project that activates
+  retrieval.
+
+## Retrieval-capable plan shape (future-activated / synthetic)
+
+The plan contract can still carry a retrieval-shaped plan. This proves the
+RAG-ready surface, not that an active backend exists:
+
+```python
 SupportAgentState(
     plan=[
         PlanStep(
@@ -26,3 +43,12 @@ SupportAgentState(
     ],
     current_step_id="step_retrieve_refund_policy",
 )
+```
+
+## Fallback on planner failure
+
+Fallback must agree with `workflow_outcome = needs_human_review` and must not
+pretend retrieval exists:
+
+* `step_draft_response` — cautious draft without corpus grounding
+* `step_human_review` — always present in fallback

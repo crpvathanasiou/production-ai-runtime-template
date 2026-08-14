@@ -33,7 +33,7 @@ class GraphState(BaseModel):
 
     retrieved_documents: list[RetrievedDocument] = Field(
         default_factory=list,
-        description="The documents retrieved from the knowledge base",
+        description="Documents retrieved for this run",
     )
 
     agent_state: Optional[SupportAgentState] = Field(

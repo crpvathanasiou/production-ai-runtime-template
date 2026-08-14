@@ -135,10 +135,10 @@ Do not implement a persistence port or a tool adapter unless an approved milesto
 ## RAG / vector storage
 
 - **Status:** DEFER
-- **Why deferred:** Seed retrieval is local keyword search over markdown files.
+- **Why deferred:** The seed preserves a retrieval entrypoint / workflow seam only. No repository corpus and no active retrieval backend are shipped. Retrieval/RAG becomes active only when a real project requirement justifies it.
 - **Trigger for activation:** Corpus size/quality needs embeddings and a vector index, with an evaluation story.
 - **Expected architectural boundary:** retrieval port; vector DB is an adapter. Prompts still application-owned.
-- **What must not be implemented speculatively:** embedding pipelines, chunkers, hybrid search stacks beside the keyword service without replacing it under an approved milestone.
+- **What must not be implemented speculatively:** embedding pipelines, chunkers, hybrid search stacks beside the seeded entrypoint without replacing it under an approved milestone.
 - **Reference pattern:** adapt `retrieval_service.py` before adding a parallel RAG subsystem.
 
 ## Additional LLM providers
@@ -219,4 +219,4 @@ Do not implement a persistence port or a tool adapter unless an approved milesto
 
 - **Redis** is already in Compose and health-check ping. That is not approval to use Redis for checkpointing, queues, or memory.
 - **LangSmith tracing** in the wrapper/nodes is not approval for LangSmith prompt ownership or a telemetry domain model.
-- **Keyword `knowledge_base/` retrieval** is not approval for vector RAG.
+- **Seeded retrieval entrypoint / workflow seam** is not approval for vector RAG.
