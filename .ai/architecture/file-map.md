@@ -16,7 +16,7 @@ Dependency direction for the **target** architecture:
 Client → Delivery Adapter → [optional LangGraph driving/orchestration] → Application Core → Ports ← outbound/driven adapters
 ```
 
-The seed often violates that (nodes import the OpenAI wrapper and LangSmith directly). Do not “fix” that in a documentation/governance milestone.
+The seed previously violated that direction (nodes importing the OpenAI wrapper directly). After M1, active LLM paths go Node → Application Operation → `LLMPort` → adapter; GraphState and LangGraph remain orchestration concerns. Do not invent a future runtime layout beyond what exists.
 
 Documentation vs runtime (do not conflate):
 
@@ -29,24 +29,54 @@ Specialized contracts / operations / testing / project-workflow documentation
       (when those documents exist)
 
 Runtime application contracts and ports
-    → implemented in app/ under approved runtime milestones — not by documentation work
+    → partially present after M1: `app/application/` + `LLMPort`; not a full `app/ports/` / `app/adapters/` tree
 ```
 
-The current tree includes template architecture/governance plus specialized `.ai/contracts/`, `.ai/operations/`, `.ai/projects/` (`_template` only; no active project), `.ai/skills/`, and the remaining engineering strategy documents. Runtime `app/ports/` and `app/adapters/` packages are **not** present. Do not invent a future runtime layout here. Documentation of contracts is not Python contract implementation.
+The current tree includes template architecture/governance plus specialized `.ai/contracts/`, `.ai/operations/`, `.ai/projects/` (`_template` only; no active project), `.ai/skills/`, and the remaining engineering strategy documents. Runtime `app/ports/` and `app/adapters/` packages are **not** present as separate trees; M1 placed the LLM port under `app/application/ports/`. Do not invent a future runtime layout here. Documentation of contracts is not Python contract implementation.
 
 ---
 
 ## `app/`
 
-**Current responsibility:** Python package for the seeded Customer Support Triage copilot: FastAPI process, LangGraph workflow, OpenAI calls, prompts, guardrails, and a seeded retrieval entrypoint/seam (currently inert).
+**Current responsibility:** Python package for the seeded Customer Support Triage copilot: FastAPI process, LangGraph workflow, Application Core LLM operations, OpenAI adapter behind `LLMPort`, prompts, guardrails, and a seeded retrieval entrypoint/seam (currently inert).
 
-**Role:** mixed (delivery + domain/example + adapter code in one tree)
+**Role:** mixed (delivery + domain/example + application core + adapter code in one tree)
 
 **Depends on:** FastAPI, Pydantic, LangGraph, OpenAI SDK, LangSmith, Redis client
 
-**Must not introduce:** new runtime layers, extra providers, generic executors, or a parallel app package
+**Must not introduce:** new runtime layers beyond approved milestones, extra providers, generic executors, or a parallel app package
 
 **Change belongs here:** approved runtime milestones only. Documentation/governance work does not change `app/`.
+
+---
+
+## `app/application/`
+
+Files: `input_shield.py`, `triage.py`, `planner.py`, `response_drafting.py`, `ports/llm.py` (plus package `__init__` modules)
+
+**Current responsibility:** Application Core for the four live LLM use cases. Owns application/use-case semantics, prompt invocation, `LLMPort` usage, Input Shield deterministic max-prompt policy and normalization/fallback, Planner normalization/fallback, Triage and Response Drafting LLM execution.
+
+**Role:** reusable/core-related (Application Core for LLM paths)
+
+**Depends on:** `LLMPort`, prompt builders, schemas/domain types used by operations — **not** `GraphState`, LangGraph, OpenAI SDK, LangSmith, concrete provider models, `request_id`, or `workflow_outcome`
+
+**Must not introduce:** GraphState/framework/provider leakage into Application Core
+
+**Change belongs here:** application LLM use-case semantics under approved milestones. Prompt Identity / `PromptRepository` / `ExecutionContext` / Telemetry are **not** implemented here yet.
+
+---
+
+## `app/composition.py`
+
+**Current responsibility:** explicit production composition root. Reads settings; constructs four configured `AsyncOpenAIWrapper` instances; constructs four Application Operations; supplies them to `build_graph(...)`; supplies model-name labels only for orchestration observability.
+
+**Role:** composition / wiring (not Application Core business semantics)
+
+**Depends on:** settings, Application Operations, `AsyncOpenAIWrapper`, `app.graph.build_graph`
+
+**Must not introduce:** business policy inside composition beyond wiring
+
+**Change belongs here:** production wiring for the live seeded runtime.
 
 ---
 
@@ -70,15 +100,15 @@ Files: `settings.py`, `exceptions.py`, `logging.py`
 
 File: `openai_wrapper.py`
 
-**Current responsibility:** async OpenAI chat/structured-output wrapper with retries, timeout, wrapper-level guardrails, and LangSmith `@traceable`. Nodes call this class directly.
+**Current responsibility:** concrete outbound OpenAI adapter behind `LLMPort` — async chat/structured-output with retries, timeouts, provider parsing, wrapper-level guardrails, and LangSmith `@traceable`. Constructed in `app/composition.py`; **not** constructed or called directly by LangGraph nodes after M1.
 
-**Role:** outbound/driven adapter (today used as the LLM interface, not behind `LLMPort`)
+**Role:** outbound/driven adapter (OpenAI implementation of the LLM boundary)
 
 **Depends on:** OpenAI SDK, LangSmith, `app.core.settings`, `app.core.exceptions`
 
 **Must not introduce:** additional provider SDKs, or application/domain contracts defined in OpenAI types
 
-**Change belongs here:** eventually becoming the OpenAI implementation of `LLMPort`. Do not add a second wrapper beside it.
+**Change belongs here:** OpenAI adapter behaviour. Do not add a second wrapper beside it.
 
 ---
 
@@ -86,7 +116,7 @@ File: `openai_wrapper.py`
 
 Files: `input_shield_prompts.py`, `triage_prompts.py`, `planner_prompts.py`, `response_drafting_prompts.py`
 
-**Current responsibility:** Python string builders for Customer Support node prompts. No `prompt_id` / `revision` / `content_hash`.
+**Current responsibility:** Python string builders for Customer Support prompts. Invoked by Application Operations. No `prompt_id` / `revision` / `content_hash`.
 
 **Role:** domain/example-specific (target prompt identity is application-owned; this is not yet a `PromptRepository`)
 
@@ -102,13 +132,13 @@ Files: `input_shield_prompts.py`, `triage_prompts.py`, `planner_prompts.py`, `re
 
 Files: `input_shield.py`, `triage.py`, `planner.py`, `execute_plan.py`, `guardrails.py`, `human_review.py`, `finalize.py`
 
-**Current responsibility:** LangGraph node functions for the Customer Support workflow, including LLM calls, retrieval-shaped plan execution, routing-relevant flags, and terminal outcome helpers.
+**Current responsibility:** LangGraph orchestration adapters for the Customer Support workflow. Live LLM nodes receive Application Operations through typed factory closures; own GraphState mapping, orchestration prerequisites, `workflow_outcome` mapping, and request_id/logging/metadata. Do **not** construct OpenAI providers or own reusable prompt/LLM application semantics. `execute_plan` retains current retrieval/PlanStep orchestration (seeded placement unchanged by M1) and delegates response drafting generation to `ResponseDraftingOperation`.
 
-**Role:** domain/example-specific driving/orchestration (should call application behaviour; currently owns much of it)
+**Role:** domain/example-specific driving/orchestration
 
-**Depends on:** `GraphState`, OpenAI wrapper, prompts, guardrails, retrieval service, LangSmith
+**Depends on:** `GraphState`, injected Application Operations, prompts (indirectly via operations), guardrails, retrieval service, LangSmith
 
-**Must not introduce:** reusable business contracts, provider choice, or tool authorization as node-private SDK types
+**Must not introduce:** reusable business contracts, provider construction, or tool authorization as node-private SDK types
 
 **Change belongs here:** this example graph’s orchestration only. Do not turn these nodes into a generic business graph.
 
@@ -148,13 +178,13 @@ File: `retrieval_service.py`
 
 ## `app/graph.py`
 
-**Current responsibility:** builds and compiles the Customer Support `StateGraph` (nodes, conditional edges, `START`/`END`).
+**Current responsibility:** owns graph topology/wiring for the Customer Support `StateGraph` (nodes, conditional edges, `START`/`END`). Receives injected Application Operations and model-name labels; does **not** construct providers.
 
 **Role:** domain/example-specific LangGraph **driving/orchestration** adapter (not an outbound LLM/tool adapter)
 
-**Depends on:** LangGraph, `GraphState`, `app.nodes.*`
+**Depends on:** LangGraph, `GraphState`, `app.nodes.*`, Application Operation types
 
-**Must not introduce:** a generic runtime, checkpointing, or template-wide graph factory
+**Must not introduce:** a generic runtime, checkpointing, provider construction, or template-wide graph factory
 
 **Change belongs here:** wiring for this example graph only.
 
@@ -204,7 +234,7 @@ File: `retrieval_service.py`
 
 ## `tests/`
 
-**Current responsibility:** pytest suite — FastAPI health, OpenAI wrapper unit tests, per-node tests, smoke test.
+**Current responsibility:** pytest suite — FastAPI health, Application Operation tests with FakeLLM, OpenAI adapter unit tests, node tests with fake Application Operations, composition tests, per-node behavioural coverage, smoke test.
 
 **Role:** engineering / test
 
@@ -212,13 +242,13 @@ File: `retrieval_service.py`
 
 **Must not introduce:** production behaviour, new runtime packages, or dependency changes to “make tests green” outside an approved milestone
 
-**Change belongs here:** tests for existing seed behaviour. Documentation/governance work does not modify tests.
+**Change belongs here:** tests for existing seed / M1 behaviour. Documentation/governance work does not modify tests.
 
 ---
 
 ## `scripts/`
 
-PowerShell helpers (`dev.ps1`, `test.ps1`, `lint.ps1`, `typecheck.ps1`) and `run_graph_once.py` (manual graph invocation). Several `.ps1` files contain commented commands rather than live invocations.
+PowerShell helpers (`dev.ps1`, `test.ps1`, `lint.ps1`, `typecheck.ps1`) and `run_graph_once.py` (manual graph invocation via `app.composition.build_runtime_graph()`). Several `.ps1` files contain commented commands rather than live invocations.
 
 **Role:** engineering / infrastructure
 

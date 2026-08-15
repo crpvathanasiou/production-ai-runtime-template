@@ -1,5 +1,8 @@
 # execute_plan tests (current semantics)
 
+Node tests fake `ResponseDraftingOperation` (not the OpenAI wrapper) for drafting paths.
+Retrieval / human-review behavioural regressions remain intact.
+
 Covers:
 
 1. **Mocked retrieval success** — RAG-ready seam:

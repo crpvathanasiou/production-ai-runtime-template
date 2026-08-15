@@ -36,16 +36,49 @@ input_shield_node
 ----------------------------------------------------------------------------------------------------------
 # 2. Με τις εσωτερικές συναρτήσεις ανά node
 
+Current LLM ownership (M1):
+
+```text
+input_shield_node
+  → InputShieldOperation
+  → existing prompt builders
+  → LLMPort
+  → AsyncOpenAIWrapper
+
+triage_node
+  → TriageOperation
+  → existing prompt builders
+  → LLMPort
+  → AsyncOpenAIWrapper
+
+planner_node
+  → PlannerOperation
+  → existing prompt builders
+  → LLMPort
+  → AsyncOpenAIWrapper
+
+execute_plan_node response step
+  → ResponseDraftingOperation
+  → existing prompt builders
+  → LLMPort
+  → AsyncOpenAIWrapper
+```
+
+GraphState mutations and workflow routing remain on the node/orchestration side.
+Retrieval PlanStep execution remains in execute_plan (current seeded placement; unchanged by M1).
+ResponseDraftingOperation owns drafting generation only — not PlanStep orchestration.
+
 START
   │
   ▼
 input_shield_node(state)
   │
-  ├─ build_fail_fast_shield_output(ticket)
-  ├─ build_input_shield_prompt(ticket)
-  ├─ AsyncOpenAIWrapper.generate_structured(...)
-  ├─ _normalize_llm_shield_output(...)
-  └─ writes:
+  ├─ InputShieldOperation.execute(...)
+  │    ├─ build_fail_fast_shield_output(ticket)
+  │    ├─ build_input_shield_prompt(ticket)
+  │    ├─ LLMPort → AsyncOpenAIWrapper.generate_structured(...)
+  │    └─ normalization / expected-failure fallback
+  └─ node writes:
        - state.shield_result
        - state.workflow_outcome
        - state.additional_metadata["input_shield"]
@@ -61,11 +94,11 @@ route_after_input_shield(state)
 
 triage_node(state)
   │
-  ├─ build_triage_system_prompt()
-  ├─ build_triage_user_prompt(...)
-  ├─ AsyncOpenAIWrapper.generate_structured(...)
-  ├─ _normalize_triage_output(...)   [αν υπάρχει normalization helper]
-  └─ writes:
+  ├─ TriageOperation.execute(...)
+  │    ├─ build_triage_system_prompt()
+  │    ├─ build_triage_user_prompt(...)
+  │    └─ LLMPort → AsyncOpenAIWrapper.generate_structured(...)
+  └─ node writes:
        - state.triage_result
        - state.workflow_outcome
        - state.additional_metadata["triage"]
@@ -74,12 +107,13 @@ triage_node(state)
   ▼
 planner_node(state)
   │
-  ├─ build_planner_system_prompt()
-  ├─ build_planner_user_prompt(...)
-  ├─ AsyncOpenAIWrapper.generate_structured(...)
-  ├─ _normalize_planner_output(...)
-  ├─ _build_fallback_plan(...)   [σε recoverable failure]
-  └─ writes:
+  ├─ PlannerOperation.execute(...)
+  │    ├─ build_planner_system_prompt()
+  │    ├─ build_planner_user_prompt(...)
+  │    ├─ LLMPort → AsyncOpenAIWrapper.generate_structured(...)
+  │    ├─ normalization
+  │    └─ fallback plan [σε recoverable failure]
+  └─ node writes:
        - state.agent_state.plan
        - state.agent_state.current_step_id
        - state.workflow_outcome
@@ -97,7 +131,7 @@ execute_plan_node(state)
   │
   ├─ loops through state.agent_state.plan
   │
-  ├─ for retrieval step:
+  ├─ for retrieval step (current seeded placement; unchanged by M1):
   │    ├─ _build_retrieval_query(state, step)
   │    ├─ _execute_retrieval_step(state, step)
   │    │    └─ retrieve_relevant_documents(...)
@@ -105,10 +139,11 @@ execute_plan_node(state)
   │
   ├─ for response step:
   │    ├─ _execute_response_step(state, step)
-  │    │    ├─ build_response_drafting_system_prompt()
-  │    │    ├─ build_response_drafting_user_prompt(...)
-  │    │    ├─ AsyncOpenAIWrapper.generate_structured(...)
-  │    │    └─ writes state.response_draft
+  │    │    ├─ ResponseDraftingOperation.execute(...)
+  │    │    │    ├─ build_response_drafting_system_prompt()
+  │    │    │    ├─ build_response_drafting_user_prompt(...)
+  │    │    │    └─ LLMPort → AsyncOpenAIWrapper.generate_structured(...)
+  │    │    └─ node maps draft into state.response_draft
   │    └─ _mark_step_completed(...) / _mark_step_failed(...)
   │
   ├─ for human step:
@@ -195,15 +230,15 @@ FINALIZE
 --------------------------------------------------------------------------------------------------------
 # 4. Το πιο σύντομο diagram 
 
-input_shield_node
+input_shield_node → InputShieldOperation → LLMPort → AsyncOpenAIWrapper
    ↓
-triage_node
+triage_node → TriageOperation → LLMPort → AsyncOpenAIWrapper
    ↓
-planner_node
+planner_node → PlannerOperation → LLMPort → AsyncOpenAIWrapper
    ↓
 execute_plan_node
-   ├─ _execute_retrieval_step()
-   └─ _execute_response_step()
+   ├─ _execute_retrieval_step()   (current seeded placement; unchanged by M1)
+   └─ _execute_response_step() → ResponseDraftingOperation → LLMPort → AsyncOpenAIWrapper
    ↓
 guardrails_node
    ↓
@@ -219,23 +254,21 @@ input_shield_node
   -> planner_node
   -> execute_plan_node
       -> _execute_retrieval_step()
-      -> _execute_response_step()
+      -> _execute_response_step() via ResponseDraftingOperation
   -> guardrails_node
   -> human_review_node (if needed)
   -> finalize_node
 
-1. input_shield_node validates the incoming ticket
-2. triage_node classifies the case
-3. planner_node produces the execution plan
+1. input_shield_node validates the incoming ticket via InputShieldOperation
+2. triage_node classifies the case via TriageOperation
+3. planner_node produces the execution plan via PlannerOperation
 4. execute_plan_node executes retrieval-shaped and drafting steps
    - retrieval returning docs → completed
    - explicit retrieval returning none → failed + needs_human_review
    - pending human PlanStep remains pending → needs_human_review
+   - response drafting generation is delegated to ResponseDraftingOperation
 5. guardrails validates provenance against retrieved evidence
 6. route_after_guardrails preserves upstream needs_human_review
 7. human_review_node treats upstream needs_human_review as review_required
 8. finalize_node closes the run
-5. guardrails_node validates the drafted response
-6. human_review_node is called if needed
-7. finalize_node closes the workflow
 

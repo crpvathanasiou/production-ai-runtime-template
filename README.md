@@ -1,6 +1,6 @@
 # production-ai-runtime-template
 
-Reusable **production-oriented AI runtime template** in preparation. Governance and architecture documentation live under [`.ai/`](.ai/README.md). The Python tree still contains a **seeded Customer Support Triage** example; that seed is useful code, not a claim that the approved ports-and-adapters runtime, prompt lifecycle, or M1+ contracts already exist.
+Reusable **production-oriented AI runtime template** in preparation. Governance and architecture documentation live under [`.ai/`](.ai/README.md). The Python tree still contains a **seeded Customer Support Triage** example; that seed is useful code and now includes the M1 Application LLM Execution Boundary for active LLM paths. Later readiness capabilities (Prompt Identity, ExecutionContext, Telemetry, and others) remain unimplemented — see [`.ai/architecture/template-readiness.md`](.ai/architecture/template-readiness.md).
 
 This repository is no longer the `fastapi-prod-starter` sample. Docker Compose service names in `docker-compose.yaml` may still reflect that older identity; renaming them is an infrastructure change, not a documentation correction.
 
@@ -18,9 +18,20 @@ That tree is the persistent human/AI engineering continuity layer:
 
 ## Seeded implementation (current code)
 
-FastAPI serves `/health` and `/version`. A LangGraph Customer Support workflow (input shield, triage, planner, execute plan, guardrails, human review, finalize) lives under `app/` and is exercised by tests and `scripts/run_graph_once.py`. OpenAI is called through `app/llm/openai_wrapper.py`. Optional Redis is used only for a health-check ping when `REDIS_URL` is set.
+FastAPI still exposes `/health` and `/version` only. The Customer Support LangGraph example remains the live seeded workflow under `app/` (input shield, triage, planner, execute plan, guardrails, human review, finalize). It is exercised by tests and `scripts/run_graph_once.py`.
 
-That behaviour is the seed. The intended reusable architecture is documented in [`.ai/architecture/architecture.md`](.ai/architecture/architecture.md).
+Active LLM paths now use:
+
+```text
+LangGraph Node
+  → Application Operation
+  → LLMPort
+  → AsyncOpenAIWrapper / OpenAI
+```
+
+Explicit production composition lives in `app/composition.py` (`build_runtime_graph()`). `scripts/run_graph_once.py` uses that composed runtime graph. LangGraph remains optional in the target architecture even though it is the active seeded orchestration example. Prompt Identity, ExecutionContext, and Telemetry remain later readiness gaps.
+
+Authoritative detail: [`.ai/architecture/architecture.md`](.ai/architecture/architecture.md) and [`.ai/architecture/file-map.md`](.ai/architecture/file-map.md). Optional Redis is used only for a health-check ping when `REDIS_URL` is set.
 
 ## Requirements
 

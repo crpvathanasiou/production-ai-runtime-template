@@ -1,14 +1,17 @@
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import END, START, StateGraph
 
+from app.application.input_shield import InputShieldOperation
+from app.application.planner import PlannerOperation
+from app.application.response_drafting import ResponseDraftingOperation
+from app.application.triage import TriageOperation
 from app.graph_state import GraphState
-
-from app.nodes.input_shield import input_shield_node
-from app.nodes.triage import triage_node
-from app.nodes.planner import planner_node
-from app.nodes.execute_plan import execute_plan_node
+from app.nodes.execute_plan import make_execute_plan_node
+from app.nodes.finalize import finalize_node
 from app.nodes.guardrails import guardrails_node
 from app.nodes.human_review import human_review_node
-from app.nodes.finalize import finalize_node
+from app.nodes.input_shield import make_input_shield_node
+from app.nodes.planner import make_planner_node
+from app.nodes.triage import make_triage_node
 
 
 def route_after_input_shield(state: GraphState) -> str:
@@ -28,6 +31,7 @@ def route_after_input_shield(state: GraphState) -> str:
 
     return "triage"
 
+
 def route_after_planner(state: GraphState) -> str:
     """
     If planner produced no plan, stop gracefully.
@@ -39,6 +43,7 @@ def route_after_planner(state: GraphState) -> str:
         return "finalize"
 
     return "execute_plan"
+
 
 def route_after_guardrails(state: GraphState) -> str:
     """
@@ -59,8 +64,35 @@ def route_after_guardrails(state: GraphState) -> str:
     return "finalize"
 
 
-def build_graph():
+def build_graph(
+    *,
+    input_shield_operation: InputShieldOperation,
+    triage_operation: TriageOperation,
+    planner_operation: PlannerOperation,
+    response_drafting_operation: ResponseDraftingOperation,
+    input_shield_model_name: str,
+    triage_model_name: str,
+    planner_model_name: str,
+    response_drafting_model_name: str,
+):
     graph = StateGraph(GraphState)
+
+    input_shield_node = make_input_shield_node(
+        input_shield_operation,
+        model_name=input_shield_model_name,
+    )
+    triage_node = make_triage_node(
+        triage_operation,
+        model_name=triage_model_name,
+    )
+    planner_node = make_planner_node(
+        planner_operation,
+        model_name=planner_model_name,
+    )
+    execute_plan_node = make_execute_plan_node(
+        response_drafting_operation,
+        model_name=response_drafting_model_name,
+    )
 
     # Nodes
     graph.add_node("input_shield", input_shield_node)
@@ -70,7 +102,6 @@ def build_graph():
     graph.add_node("guardrails", guardrails_node)
     graph.add_node("human_review", human_review_node)
     graph.add_node("finalize", finalize_node)
-    
 
     # Edges
     graph.add_edge(START, "input_shield")
@@ -80,8 +111,8 @@ def build_graph():
         {
             "triage": "triage",
             "finalize": "finalize",
-        }
-        )
+        },
+    )
 
     graph.add_edge("triage", "planner")
 
@@ -91,8 +122,8 @@ def build_graph():
         {
             "execute_plan": "execute_plan",
             "finalize": "finalize",
-        }
-        )
+        },
+    )
 
     graph.add_edge("execute_plan", "guardrails")
 
@@ -102,35 +133,11 @@ def build_graph():
         {
             "human_review": "human_review",
             "finalize": "finalize",
-        }
-        )
+        },
+    )
 
     graph.add_edge("human_review", "finalize")
 
     graph.add_edge("finalize", END)
 
     return graph.compile()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -4,8 +4,9 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, List, Optional, Protocol, Sequence, Type, TypeVar
+from typing import Any, Dict, Generic, List, Optional, Protocol, Sequence, Type
 
+from langsmith import traceable
 from openai import APIError, APITimeoutError, AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionMessageParam,
@@ -13,14 +14,14 @@ from openai.types.chat import (
     ChatCompletionUserMessageParam,
 )
 from pydantic import BaseModel
-from langsmith import traceable
+
+from app.application.ports.llm import LLMExecutionMetadata, StructuredLLMResult, T
 from app.core.exceptions import (
     GuardrailBlockedError,
     ModelOutputParsingError,
     UpstreamServiceError,
 )
 from app.core.settings import get_settings
-
 
 # -----------------------------------------------------------------------------
 # Protocols
@@ -62,8 +63,8 @@ class AsyncOpenAIClientProtocol(Protocol):
     def beta(self) -> BetaProtocol: ...
 
 
-# Generic type για structured outputs που είναι πάντα Pydantic models.
-T = TypeVar("T", bound=BaseModel)
+# T is imported from the application LLM port so LLMCallResult[T] shares the
+# same TypeVar as StructuredLLMResult[T] for static assignability.
 
 
 # -----------------------------------------------------------------------------
@@ -145,28 +146,41 @@ class MaxPromptLengthGuardrail(BaseGuardrail):
 
 
 # -----------------------------------------------------------------------------
-# Wrapper result model
+# Wrapper result models
 # -----------------------------------------------------------------------------
-# Ενιαίο αποτέλεσμα για κάθε LLM call.
-# Κρατάμε:
-# - model_name
-# - raw_text
-# - parsed structured output (αν υπάρχει)
-# - guardrail notes
-# - raw SDK response
-# - latency
-# - attempts (χρήσιμο για retries / observability)
+# LLMCallResult: legacy/general adapter result for text generation.
+# parsed may be None.
+#
+# OpenAIStructuredResult: structured-generation adapter result.
+# Structurally compatible with StructuredLLMResult[T] (parsed: T is mandatory)
+# while preserving the live adapter surface used by nodes.
 
 
 @dataclass
 class LLMCallResult(Generic[T]):
     model_name: str
     raw_text: str
-    parsed: Optional[T] = None
+    parsed: T | None = None
     guardrail_notes: List[Dict[str, Any]] = field(default_factory=list)
     raw_response: Any = None
     latency_ms: float = 0.0
     attempts: int = 1
+
+
+@dataclass(frozen=True)
+class OpenAIStructuredResult(StructuredLLMResult[T], Generic[T]):
+    model_name: str
+    raw_text: str
+    guardrail_notes: list[dict[str, Any]] = field(default_factory=list)
+    raw_response: Any = None
+
+    @property
+    def latency_ms(self) -> float:
+        return self.execution.latency_ms
+
+    @property
+    def attempts(self) -> int:
+        return self.execution.attempts
 
 
 # -----------------------------------------------------------------------------
@@ -324,7 +338,9 @@ class AsyncOpenAIWrapper:
     # - prompt-only "return JSON"
     # - manual json.loads()
     # - manual schema parsing σαν primary mechanism
-    @traceable(run_type="llm", name="openai_generate_structured")
+    #
+    # Public method stays undecorated so TypeVar inference / LLMPort assignability
+    # are preserved; LangSmith tracing keeps the same run name on the impl below.
     async def generate_structured(
         self,
         *,
@@ -334,8 +350,7 @@ class AsyncOpenAIWrapper:
         temperature: Optional[float] = None,
         enforced_guardrails: Optional[Sequence[BaseGuardrail]] = None,
         system_prompt: Optional[str] = None,
-        ) -> LLMCallResult[T]:
-
+    ) -> OpenAIStructuredResult[T]:
         """
         Strict structured path.
 
@@ -344,6 +359,26 @@ class AsyncOpenAIWrapper:
         - manual json.loads()
         - manual schema enforcement as the primary mechanism
         """
+        return await self._generate_structured_traced(
+            prompt=prompt,
+            response_schema=response_schema,
+            model_name=model_name,
+            temperature=temperature,
+            enforced_guardrails=enforced_guardrails,
+            system_prompt=system_prompt,
+        )
+
+    @traceable(run_type="llm", name="openai_generate_structured")
+    async def _generate_structured_traced(
+        self,
+        *,
+        prompt: str,
+        response_schema: Type[T],
+        model_name: Optional[str] = None,
+        temperature: Optional[float] = None,
+        enforced_guardrails: Optional[Sequence[BaseGuardrail]] = None,
+        system_prompt: Optional[str] = None,
+    ) -> OpenAIStructuredResult[T]:
         model = model_name or self.default_model
         temp = self.default_temperature if temperature is None else temperature
         guardrails = list(enforced_guardrails or [])
@@ -410,14 +445,16 @@ class AsyncOpenAIWrapper:
 
                 latency_ms = round((time.perf_counter() - start) * 1000, 2)
 
-                return LLMCallResult[T](
+                return OpenAIStructuredResult[T](
+                    parsed=parsed,
+                    execution=LLMExecutionMetadata(
+                        latency_ms=latency_ms,
+                        attempts=attempt,
+                    ),
                     model_name=model,
                     raw_text=raw_text,
-                    parsed=parsed,
                     guardrail_notes=guardrail_notes,
                     raw_response=completion,
-                    latency_ms=latency_ms,
-                    attempts=attempt,
                 )
 
             # Upstream/transport failures => retryable

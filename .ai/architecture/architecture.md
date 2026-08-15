@@ -6,17 +6,24 @@ This document is the approved **target** architecture for the reusable template.
 
 **Approved target architecture** is the model below. Future work must move toward it.
 
-**Currently implemented in the seeded repository:**
+**Currently implemented in the seeded repository (after M1):**
 
 - FastAPI app with `/health` and `/version`
 - optional Redis ping in the health check
 - a Customer Support Triage LangGraph workflow (`input_shield` → `triage` → `planner` → `execute_plan` → `guardrails` → `human_review` → `finalize`)
-- OpenAI used directly through `app/llm/openai_wrapper.py`
-- prompt text built in Python modules under `app/prompts/`
-- a seeded retrieval entrypoint / workflow seam (no repository-level knowledge corpus; no active retrieval backend)
+- real Application Core under `app/application/` with four live operations:
+  `InputShieldOperation`, `TriageOperation`, `PlannerOperation`, `ResponseDraftingOperation`
+- provider-neutral `LLMPort` (`app/application/ports/llm.py`)
+- `AsyncOpenAIWrapper` as the concrete OpenAI outbound adapter satisfying that boundary
+- explicit production composition in `app/composition.py` (`build_runtime_graph()`)
+- active LLM paths: LangGraph Node → Application Operation → `LLMPort` → `AsyncOpenAIWrapper` / OpenAI
+- prompt text still built in Python modules under `app/prompts/` (invoked by Application Operations; no prompt identity/revision/hash)
+- a seeded retrieval entrypoint / workflow seam (no repository-level knowledge corpus; no active retrieval backend; current placement in `execute_plan` unchanged by M1)
 - LangSmith `@traceable` on selected calls and nodes
 
-The seed is useful. It is not `LLMPort`, `ExecutionContext`, portable prompt identity, or application-owned tool contracts. Do not document those as already implemented.
+**Not yet implemented (later readiness / deferred):** Prompt Identity / `PromptRepository`, `ExecutionContext`, `TelemetryPort`, controlled tool runtime, RAG backend, durable HITL, CI readiness closure, multiple providers. Do not document those as already implemented. M1 does **not** make the entire Template Readiness baseline complete.
+
+GraphState remains outside Application Core. Prompt invocation for the four live LLM paths is application-owned.
 
 ## Canonical model
 
@@ -144,7 +151,7 @@ Graph-specific state may carry a copy of identifiers; it is not the owner of exe
 
 ### Provider-neutral `LLMPort`
 
-The application calls language models through a provider-neutral **port**. The existing OpenAI wrapper will eventually become the **OpenAI implementation** behind `LLMPort` (an outbound/driven adapter). Multiple providers are not implemented. Do not imply that they are.
+The application calls language models through a provider-neutral **port**. After M1, `LLMPort` exists and `AsyncOpenAIWrapper` is the concrete OpenAI outbound adapter behind that boundary for the four live Application Operations. Multiple providers are not implemented. Do not imply that they are.
 
 ### Prompt identity and `PromptRepository`
 
@@ -186,7 +193,7 @@ MCP / REST / DB tool adapters
 
 The LLM cannot perform side effects by itself. Any tool/side effect is an application-authorized `ToolRequest` that yields a typed `ToolResult`. Future execution boundaries and tool adapters are separate from these contracts. A generic `ControlledToolExecutor` implementation is deferred. MCP / REST / DB tool adapters are deferred.
 
-Current seed: no tool-request contracts; `execute_plan` contains retrieval-shaped orchestration through the seeded retrieval entrypoint (currently no active retrieval source) and response drafting inside the node.
+Current seed: no tool-request contracts; `execute_plan` retains retrieval-shaped PlanStep orchestration through the seeded retrieval entrypoint (currently no active retrieval source; placement unchanged by M1). Response drafting generation is delegated to `ResponseDraftingOperation` via `LLMPort`.
 
 ### FastAPI as delivery adapter
 
@@ -227,7 +234,7 @@ The same application core should be deployable with different delivery and provi
 
 ## LLM decision
 
-One provider path is in scope for the seed: OpenAI via the existing wrapper, later adapted behind `LLMPort`. Additional providers stay on the deferred register until a real requirement exists.
+One provider path is in scope for the seed: OpenAI via `AsyncOpenAIWrapper` behind `LLMPort`. Additional providers stay on the deferred register until a real requirement exists.
 
 ## What this document does not decide
 

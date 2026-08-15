@@ -8,13 +8,13 @@
     - additional_metadata["input_shield"]
   update rules:
     - αν το input είναι empty / non-actionable / clearly unsafe, γράφει shield_result με decision "block" ή "needs_clarification"
-    - αν περάσει fail-fast checks, καλεί το shield LLM και γράφει structured ShieldOutput
+    - αν περάσει fail-fast checks, το node καλεί InputShieldOperation (→ LLMPort → adapter) και mapάρει structured ShieldOutput στο state
     - workflow_outcome:
         - "blocked" όταν decision == "block"
         - "blocked" όταν decision == "needs_clarification"
         - "needs_human_review" όταν should_route_to_human == True
         - "running" όταν το input μπορεί να συνεχίσει κανονικά
-    - γράφει metadata για model / latency / guardrails / errors
+    - γράφει metadata για model / latency / attempts / decision / errors (όχι synthetic successful guardrail_notes ως required result)
 
 # triage_node
   input:
@@ -27,7 +27,7 @@
     - additional_metadata["triage"]
   update rules:
     - τρέχει μόνο αφού υπάρχει shield_result που επιτρέπει συνέχεια
-    - καλεί το triage LLM και γράφει structured TriageOutput
+    - το node καλεί TriageOperation (→ LLMPort → adapter) και mapάρει structured TriageOutput στο state
     - workflow_outcome:
         - συνήθως "running" όταν το triage ολοκληρωθεί σωστά
         - "needs_human_review" μόνο αν έχεις ορίσει fallback/recovery path σε error
@@ -48,10 +48,11 @@
     - additional_metadata["planner"]
   update rules:
     - απαιτεί shield_result και triage_result
-    - καλεί το planner LLM και παράγει structured SupportAgentState
-    - κάνει normalization:
+    - το node καλεί PlannerOperation (→ LLMPort → adapter)· η operation παράγει/normalizes structured SupportAgentState (και fallback σε recoverable failure)
+    - normalization (owned by PlannerOperation):
         - όλα τα plan steps ξεκινούν ως "pending"
         - current_step_id γίνεται το πρώτο step αν λείπει
+    - το node mapάρει PlannerOutcome στο GraphState / workflow_outcome
     - workflow_outcome:
         - "running" όταν υπάρχει έγκυρο plan
         - "blocked" αν λείπει shield_result ή triage_result
@@ -92,8 +93,8 @@
             - δεν θεωρείται successful retrieval
         - σε exception αλλάζει το step status σε "failed"
     - για κάθε response_agent step:
-        - καλεί drafting LLM
-        - γράφει response_draft
+        - το node orchestrates το PlanStep και καλεί ResponseDraftingOperation (→ LLMPort → adapter)
+        - mapάρει το draft στο response_draft
         - με retrieved evidence: result = "Drafted grounded customer response."
         - χωρίς retrieved evidence: result = "Drafted customer response without retrieved context."
         - αλλάζει το step status σε "completed"

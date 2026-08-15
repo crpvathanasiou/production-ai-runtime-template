@@ -1,28 +1,183 @@
-import asyncio
-import uuid
+"""Input shield node adapter tests — fake Application Operations only."""
 
+from __future__ import annotations
+
+import inspect
+
+import pytest
+
+import app.nodes.input_shield as input_shield_module
+from app.application.input_shield import InputShieldOutcome
+from app.application.ports.llm import LLMExecutionMetadata
 from app.graph_state import GraphState
-from app.nodes.input_shield import input_shield_node
-from app.schemas import SupportTicket
+from app.nodes.input_shield import make_input_shield_node
+from app.schemas import ShieldOutput, SupportTicket
 
 
-async def main() -> None:
-    state = GraphState(
-        request_id=str(uuid.uuid4()),
-        initial_ticket=SupportTicket(
-            customer_message="I was charged twice for my order and I need help.",
-            customer_metadata={"customer_id": "cust_123"},
-            order_account_metadata={"order_id": "ord_456"},
-        ),
+class FakeInputShieldOperation:
+    def __init__(self, outcome: InputShieldOutcome) -> None:
+        self._outcome = outcome
+        self.calls: list[SupportTicket] = []
+
+    async def execute(self, ticket: SupportTicket) -> InputShieldOutcome:
+        self.calls.append(ticket)
+        return self._outcome
+
+
+def _ticket() -> SupportTicket:
+    return SupportTicket(
+        customer_message="I was charged twice for my order and I need help.",
+        customer_metadata={"customer_id": "cust_123"},
+        order_account_metadata={"order_id": "ord_456"},
     )
 
-    updated_state = await input_shield_node(state)
 
-    print("REQUEST ID:", updated_state.request_id)
-    print("WORKFLOW OUTCOME:", updated_state.workflow_outcome)
-    print("SHIELD RESULT:", updated_state.shield_result.model_dump() if updated_state.shield_result else None)
-    print("METADATA:", updated_state.additional_metadata)
+def _state() -> GraphState:
+    return GraphState(
+        request_id="req-shield-001",
+        initial_ticket=_ticket(),
+    )
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+@pytest.mark.asyncio
+async def test_input_shield_node_fail_fast_outcome():
+    shield = ShieldOutput(
+        decision="block",
+        risk_level="high",
+        categories=["non_actionable"],
+        sanitized_message="",
+        should_route_to_human=False,
+        clarification_question=None,
+        reasoning="Empty message.",
+    )
+    operation = FakeInputShieldOperation(
+        InputShieldOutcome(
+            output=shield,
+            source="heuristic_fail_fast",
+            execution=None,
+            error_type=None,
+            error_message=None,
+        )
+    )
+    node = make_input_shield_node(operation, model_name="unused-model")
+
+    updated = await node(_state())
+
+    assert len(operation.calls) == 1
+    assert operation.calls[0].customer_message == _ticket().customer_message
+    assert updated.shield_result == shield
+    assert updated.workflow_outcome == "blocked"
+    meta = updated.additional_metadata["input_shield"]
+    assert meta["request_id"] == "req-shield-001"
+    assert meta["source"] == "heuristic_fail_fast"
+    assert meta["decision"] == "block"
+    assert meta["risk_level"] == "high"
+    assert "latency_ms" in meta
+
+
+@pytest.mark.asyncio
+async def test_input_shield_node_llm_success():
+    shield = ShieldOutput(
+        decision="allow",
+        risk_level="low",
+        categories=["valid_support_request"],
+        sanitized_message="I was charged twice for my order and I need help.",
+        should_route_to_human=False,
+        clarification_question=None,
+        reasoning="Valid request.",
+    )
+    operation = FakeInputShieldOperation(
+        InputShieldOutcome(
+            output=shield,
+            source="llm",
+            execution=LLMExecutionMetadata(latency_ms=42.5, attempts=2),
+            error_type=None,
+            error_message=None,
+        )
+    )
+    node = make_input_shield_node(operation, model_name="gpt-shield-test")
+
+    updated = await node(_state())
+
+    assert updated.shield_result == shield
+    assert updated.workflow_outcome == "running"
+    meta = updated.additional_metadata["input_shield"]
+    assert meta["request_id"] == "req-shield-001"
+    assert meta["model_name"] == "gpt-shield-test"
+    assert meta["latency_ms"] == 42.5
+    assert meta["attempts"] == 2
+    assert meta["decision"] == "allow"
+    assert meta["risk_level"] == "low"
+    assert "guardrail_notes" not in meta
+
+
+@pytest.mark.asyncio
+async def test_input_shield_node_prompt_length_block():
+    shield = ShieldOutput(
+        decision="block",
+        risk_level="high",
+        categories=["suspicious_input"],
+        sanitized_message="too long",
+        should_route_to_human=True,
+        clarification_question=None,
+        reasoning="Prompt too long.",
+    )
+    operation = FakeInputShieldOperation(
+        InputShieldOutcome(
+            output=shield,
+            source="prompt_length_block",
+            execution=None,
+            error_type="GuardrailBlockedError",
+            error_message="Prompt exceeds max allowed length.",
+        )
+    )
+    node = make_input_shield_node(operation, model_name="gpt-shield-test")
+
+    updated = await node(_state())
+
+    assert updated.shield_result == shield
+    assert updated.workflow_outcome == "blocked"
+    err = updated.additional_metadata["input_shield_error"]
+    assert err["request_id"] == "req-shield-001"
+    assert err["error_type"] == "GuardrailBlockedError"
+    assert err["message"] == "Prompt exceeds max allowed length."
+    assert "latency_ms" in err
+
+    source = inspect.getsource(input_shield_module)
+    assert "build_fail_fast_shield_output" not in source
+    assert "MaxPromptLengthGuardrail" not in source
+    assert "AsyncOpenAIWrapper" not in source
+    assert "build_input_shield_system_prompt" not in source
+
+
+@pytest.mark.asyncio
+async def test_input_shield_node_llm_failure_fallback():
+    shield = ShieldOutput(
+        decision="allow_with_flag",
+        risk_level="medium",
+        categories=["suspicious_input"],
+        sanitized_message="I was charged twice for my order and I need help.",
+        should_route_to_human=True,
+        clarification_question=None,
+        reasoning="Shield model classification failed.",
+    )
+    operation = FakeInputShieldOperation(
+        InputShieldOutcome(
+            output=shield,
+            source="llm_failure_fallback",
+            execution=None,
+            error_type="UpstreamServiceError",
+            error_message="provider down",
+        )
+    )
+    node = make_input_shield_node(operation, model_name="gpt-shield-test")
+
+    updated = await node(_state())
+
+    assert updated.shield_result == shield
+    assert updated.workflow_outcome == "needs_human_review"
+    err = updated.additional_metadata["input_shield_error"]
+    assert err["request_id"] == "req-shield-001"
+    assert err["error_type"] == "UpstreamServiceError"
+    assert err["message"] == "provider down"
+    assert "latency_ms" in err

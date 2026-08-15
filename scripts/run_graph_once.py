@@ -1,14 +1,14 @@
 import asyncio
 from pprint import pprint
 
-from app.graph import build_graph
+from app.composition import build_runtime_graph
 from app.graph_state import GraphState
 from app.schemas import SupportTicket
 
 # python scripts\run_graph_once.py
 
 async def main():
-    graph = build_graph()
+    graph = build_runtime_graph()
 
     state = GraphState(
         request_id="req-manual-001",

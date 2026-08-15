@@ -1,5 +1,38 @@
 Ναι. Ο πιο καθαρός τρόπος να το δεις είναι ότι ο **input_shield agent** δεν είναι “ένα prompt”.
-Είναι ένα **μικρό subsystem** με ρόλους.
+Είναι ένα **μικρό subsystem** με ownership split μεταξύ LangGraph node και Application Operation.
+
+## Current architecture (M1)
+
+```text
+make_input_shield_node(...)
+        ↓
+LangGraph input-shield node
+        ↓
+InputShieldOperation
+        ↓
+LLMPort
+        ↓
+AsyncOpenAIWrapper
+```
+
+**InputShieldOperation owns:**
+
+- deterministic fail-fast invocation
+- prompt builder invocation
+- exact logical-prompt max-length check (combined logical prompt **strict >** `max_prompt_chars` → provider call prevented on block)
+- LLM structured call via `LLMPort`
+- normalization
+- expected LLM-failure cautious fallback
+
+**Node owns:**
+
+- `GraphState`
+- `request_id`
+- node timing/logging
+- `workflow_outcome`
+- `additional_metadata` mapping
+
+`BaseGuardrail` / `MaxPromptLengthGuardrail` / `ShieldOutputNotEmptyGuardrail` remain wrapper-level concepts where used by the adapter; they did **not** move into Application Core. Synthetic successful `guardrail_notes` are **not** a required node-metadata result after M1.
 
 ## Σχηματικά
 
@@ -7,7 +40,10 @@
 Incoming Ticket
      │
      ▼
-[ input_shield_node ]
+[ input_shield_node ]          ← GraphState / request_id / logging / workflow_outcome
+     │
+     ▼
+[ InputShieldOperation ]       ← application use-case semantics
      │
      ├── 1. local heuristic checks
      │       - empty / vague input
@@ -18,25 +54,21 @@ Incoming Ticket
      │       - system prompt
      │       - user prompt
      │
-     ├── 3. OpenAI wrapper
+     ├── 3. logical-prompt max-length policy
+     │       - strict > max_prompt_chars blocks before provider call
+     │
+     ├── 4. LLMPort → AsyncOpenAIWrapper
      │       - strict structured call
      │       - timeout / retries
-     │       - guardrail hooks
      │
-     ├── 4. schema enforcement
+     ├── 5. schema enforcement
      │       - ShieldOutput
      │
-     ├── 5. normalization layer
-     │       - fix inconsistent model outputs
-     │       - harden decisions
-     │
-     ├── 6. logging + metadata
-     │       - request_id
-     │       - latency
-     │       - model_name
-     │       - attempts
-     │
-     └── 7. state update
+     └── 6. normalization / expected-failure fallback
+             - fix inconsistent model outputs
+             - harden decisions
+
+     node then maps InputShieldOutcome →
              - state.shield_result
              - state.workflow_outcome
              - state.additional_metadata
@@ -53,7 +85,7 @@ Incoming Ticket
 * `request_id`
 * `initial_ticket`
 
-Αυτό είναι το operational context του.
+Αυτό είναι το operational context του **node** (όχι του Application Core).
 
 ---
 
@@ -81,7 +113,7 @@ Incoming Ticket
 * obvious blocking
 * predictable handling για απλά cases
 
-Αυτό είναι το πρώτο protective ring.
+Αυτό είναι το πρώτο protective ring — invoked από `InputShieldOperation`.
 
 ---
 
@@ -103,30 +135,22 @@ Incoming Ticket
 * **policy / behavior instructions**
 * από το **runtime input**
 
-Αυτό είναι σημαντικό και για καθαρότητα και για debugging.
+Invocation ownership: `InputShieldOperation` (όχι το LangGraph node).
 
 ---
 
 ## 4. LLM execution layer
 
-Αυτό είναι ο:
+Path:
 
-* `AsyncOpenAIWrapper`
+* `InputShieldOperation` → `LLMPort` → `AsyncOpenAIWrapper`
 
 ### Ρόλος
 
-Να αναλάβει ενιαία:
+* Application Operation: prompt invocation, max-prompt policy, normalization/fallback
+* `AsyncOpenAIWrapper`: outbound OpenAI adapter (retries, timeout, provider parsing)
 
-* model selection
-* strict structured output
-* retries
-* timeout
-* guardrail checks
-* response parsing
-* common metadata
-
-Άρα ο node δεν μιλά “ωμά” στο OpenAI SDK.
-Μιλά στον wrapper.
+Ο node **δεν** κατασκευάζει / καλεί απευθείας τον OpenAI wrapper.
 
 ---
 
@@ -154,9 +178,7 @@ Incoming Ticket
 
 ## 6. Output hardening / normalization
 
-Αυτό είναι η function:
-
-* `_normalize_llm_shield_output(...)`
+Normalization / hardening ζει μέσα στο `InputShieldOperation`.
 
 ### Ρόλος
 
@@ -174,24 +196,20 @@ Incoming Ticket
 
 ## 7. Node orchestration logic
 
-Αυτό είναι η function:
+Αυτό είναι η factory / node:
 
-* `input_shield_node(state)`
+* `make_input_shield_node(...)` → LangGraph `input_shield_node(state)`
 
 ### Ρόλος
 
-Να συντονίσει όλα τα παραπάνω.
+Να συντονίσει GraphState mapping και observability.
 
 Η σειρά είναι περίπου:
 
 ```text
 read state
-→ run fail-fast heuristics
-→ if blocked/clarify, return early
-→ build prompts
-→ call wrapper with strict schema
-→ normalize output
-→ update state
+→ invoke InputShieldOperation
+→ map InputShieldOutcome into GraphState
 → log + attach metadata
 → return state
 ```
@@ -200,7 +218,7 @@ read state
 
 ## 8. Logging / observability layer
 
-Μέσα στο node χρησιμοποιείς:
+Μέσα στο **node** χρησιμοποιείς:
 
 * `request_id`
 * `logger`
@@ -212,12 +230,11 @@ read state
 
 * start / end events
 * latency
-* attempts
-* model_name
+* model_name (label from composition)
 * decision
 * error_type
 
-Αυτό είναι το operational layer του agent.
+Αυτό είναι το operational layer του orchestration adapter.
 
 ---
 
@@ -231,13 +248,8 @@ read state
 
 ### Ρόλος
 
-Να ξεχωρίζεις failure modes:
-
-* blocked by policy
-* model output invalid
-* upstream transport failure
-
-και να κάνεις controlled fallback.
+Expected LLM-failure cautious fallback is owned by `InputShieldOperation`.
+Το node maps το outcome στο `workflow_outcome` / metadata.
 
 ---
 
@@ -257,33 +269,34 @@ read state
 * system prompt
 * user prompt
 
-## Layer 4 — Model access
+## Layer 4 — Application Operation + LLMPort
 
-* async wrapper
-* strict structured parsing
+* `InputShieldOperation`
+* provider-neutral `LLMPort`
+* `AsyncOpenAIWrapper` as OpenAI adapter
 
 ## Layer 5 — Node orchestration
 
-* `input_shield_node`
+* `input_shield_node` (GraphState / routing / metadata)
 
 ## Layer 6 — Runtime operations
 
 * logging
 * metadata
 * exceptions
-* retries / timeouts
+* retries / timeouts (adapter)
 
 ---
 
 # Με μία φράση
 
-Ο **input_shield agent** “χτίζεται” από 5 βασικά δομικά στοιχεία:
+Ο **input_shield agent** “χτίζεται” από:
 
 1. **schema contract**
 2. **heuristic guardrails**
 3. **prompts**
-4. **strict LLM wrapper**
-5. **node orchestration logic**
+4. **InputShieldOperation + LLMPort + OpenAI adapter**
+5. **node orchestration logic** (GraphState mapping)
 
 ---
 
@@ -291,7 +304,7 @@ read state
 
 Αν το περιγράψεις σε συνέντευξη ή documentation:
 
-> The input shield agent is a graph node backed by deterministic pre-checks, a strict structured LLM classification step, output normalization logic, and observability/error-handling instrumentation. Its responsibility is to decide whether an incoming support message should proceed, be flagged, require clarification, or be blocked.
+> The input shield agent is a LangGraph orchestration node that invokes `InputShieldOperation`. The operation owns deterministic pre-checks, prompt invocation, exact logical-prompt max-length policy, structured LLM classification via `LLMPort`, normalization, and expected-failure fallback. The node owns GraphState mapping, `request_id`, timing/logging, and `workflow_outcome`.
 
 Αυτό είναι πολύ σωστή περιγραφή.
 
@@ -314,13 +327,18 @@ input_shield_prompts.py
  ├── build_input_shield_system_prompt
  └── build_input_shield_user_prompt
 
-openai_wrapper.py
- └── AsyncOpenAIWrapper.generate_structured(...)
+app/application/input_shield.py
+ └── InputShieldOperation
 
-input_shield.py
- ├── _build_default_guardrails
- ├── _normalize_llm_shield_output
- └── async input_shield_node(state)
+app/application/ports/llm.py
+ └── LLMPort
+
+openai_wrapper.py
+ └── AsyncOpenAIWrapper (OpenAI adapter behind LLMPort)
+
+app/nodes/input_shield.py
+ ├── make_input_shield_node(...)
+ └── async input_shield_node(state)  # GraphState / metadata / workflow_outcome
 ```
 
 ---
@@ -331,19 +349,20 @@ input_shield.py
 GraphState.initial_ticket
         │
         ▼
-deterministic checks
+input_shield_node
         │
-        ├── early return if obvious case
         ▼
-prompt builder
+InputShieldOperation
+        │
+        ├── early return if obvious fail-fast case
         ▼
-strict structured LLM call
+prompt builders + max-prompt policy
         ▼
-ShieldOutput
+LLMPort → AsyncOpenAIWrapper
         ▼
-normalization / hardening
+ShieldOutput + normalization / fallback
         ▼
-GraphState.shield_result
+node maps → GraphState.shield_result
         ▼
 workflow_outcome + metadata + logs
 ```
@@ -355,8 +374,8 @@ workflow_outcome + metadata + logs
 
 Δείχνει **τη ροή εκτέλεσης** βήμα-βήμα.
 
-```text id="gu1j4d"
-Client / API
+```text
+Client / API / graph runner
     |
     v
 Graph Execution
@@ -367,47 +386,19 @@ input_shield_node(state)
     |-- reads --> state.request_id
     |-- reads --> state.initial_ticket
     |
-    |-- calls --> build_fail_fast_shield_output(ticket)
-    |               |
-    |               |-- sanitize_message(...)
-    |               |-- is_non_actionable(...)
-    |               |-- collect_categories(...)
-    |               |
-    |               '-- returns --> ShieldOutput | None
+    |-- invokes --> InputShieldOperation.execute(...)
+    |                 |
+    |                 |-- build_fail_fast_shield_output(ticket)
+    |                 |-- (else) prompt builders
+    |                 |-- exact logical-prompt max-length check
+    |                 |-- LLMPort → AsyncOpenAIWrapper.generate_structured(...)
+    |                 |-- normalize / expected-failure fallback
+    |                 '-- returns --> InputShieldOutcome
     |
-    |-- if fail-fast result exists:
-    |       |
-    |       |-- writes --> state.shield_result
-    |       |-- writes --> state.workflow_outcome
-    |       |-- writes --> state.additional_metadata
-    |       '-- returns --> updated state
-    |
-    |-- else:
-    |       |
-    |       |-- calls --> build_input_shield_system_prompt()
-    |       |-- calls --> build_input_shield_user_prompt(ticket)
-    |       |
-    |       |-- calls --> AsyncOpenAIWrapper.generate_structured(...)
-    |                       |
-    |                       |-- runs --> input guardrails
-    |                       |-- sends --> strict structured request to OpenAI
-    |                       |-- parses --> ShieldOutput
-    |                       '-- returns --> LLMCallResult[ShieldOutput]
-    |       |
-    |       |-- calls --> _normalize_llm_shield_output(parsed, ticket)
-    |       |
-    |       |-- writes --> state.shield_result
-    |       |-- writes --> state.workflow_outcome
-    |       |-- writes --> state.additional_metadata
-    |       '-- returns --> updated state
-    |
-    '-- on error:
-            |
-            |-- maps exception to safe fallback ShieldOutput
-            |-- writes --> state.shield_result
-            |-- writes --> state.workflow_outcome
-            |-- writes --> state.additional_metadata
-            '-- returns --> updated state
+    |-- writes --> state.shield_result
+    |-- writes --> state.workflow_outcome
+    |-- writes --> state.additional_metadata
+    '-- returns --> updated state
 ```
 
 ---
@@ -416,7 +407,7 @@ input_shield_node(state)
 
 Δείχνει **ποια μέρη συνεργάζονται** και ποιος είναι ο ρόλος του καθενός.
 
-```text id="mdw0h3"
+```text
                     ┌──────────────────────┐
                     │      GraphState       │
                     │----------------------│
@@ -432,94 +423,31 @@ input_shield_node(state)
                  ┌──────────────────────────────┐
                  │      input_shield_node       │
                  │------------------------------│
-                 │ orchestrates shield process  │
+                 │ GraphState mapping           │
                  │ logs lifecycle               │
-                 │ updates state                │
-                 └───────┬───────────┬──────────┘
-                         │           │
-         fail-fast path  │           │  LLM path
-                         │           │
-                         v           v
+                 │ workflow_outcome             │
+                 └──────────────┬───────────────┘
+                                │
+                                v
+                 ┌──────────────────────────────┐
+                 │    InputShieldOperation      │
+                 │------------------------------│
+                 │ fail-fast / prompts / policy │
+                 │ LLMPort call / normalize     │
+                 └───┬──────────────────┬───────┘
+                     │                  │
+                     v                  v
          ┌─────────────────────┐   ┌──────────────────────────┐
          │ input_guardrails.py │   │ input_shield_prompts.py  │
-         │---------------------│   │--------------------------│
-         │ sanitize_message    │   │ system prompt builder    │
-         │ collect_categories  │   │ user prompt builder      │
-         │ is_non_actionable   │   └───────────┬──────────────┘
-         │ fail-fast decision  │               │
-         └──────────┬──────────┘               │ prompts
-                    │                          v
-                    │                 ┌──────────────────────────┐
-                    │                 │    AsyncOpenAIWrapper    │
-                    │                 │--------------------------│
-                    │                 │ timeout / retries        │
-                    │                 │ strict structured parse  │
-                    │                 │ guardrail hooks          │
-                    │                 └───────────┬──────────────┘
-                    │                             │
-                    │                             v
-                    │                 ┌──────────────────────────┐
-                    │                 │        OpenAI API        │
-                    │                 │--------------------------│
-                    │                 │ structured model output  │
-                    │                 └───────────┬──────────────┘
-                    │                             │
-                    └──────────────┬──────────────┘
-                                   │
-                                   v
-                       ┌──────────────────────────┐
-                       │       ShieldOutput       │
-                       │--------------------------│
-                       │ decision                 │
-                       │ risk_level               │
-                       │ categories               │
-                       │ sanitized_message        │
-                       │ should_route_to_human    │
-                       │ clarification_question   │
-                       │ reasoning                │
-                       └──────────────────────────┘
+         └─────────────────────┘   └───────────┬──────────────┘
+                                               │
+                                               v
+                                    ┌──────────────────────────┐
+                                    │ LLMPort                  │
+                                    │ → AsyncOpenAIWrapper     │
+                                    │ → OpenAI API             │
+                                    └──────────────────────────┘
 ```
-
----
-
-## Πώς να τα εξηγήσεις προφορικά
-
-### Sequence diagram explanation
-
-Αυτό απαντά στην ερώτηση:
-
-**“Τι ακριβώς συμβαίνει όταν τρέχει ο input shield;”**
-
-Η αφήγηση είναι:
-
-1. Ο graph executor καλεί το `input_shield_node`.
-2. Το node διαβάζει `request_id` και `initial_ticket`.
-3. Πρώτα τρέχει deterministic fail-fast checks.
-4. Αν βρεθεί obvious case, σταματά νωρίς και γράφει το αποτέλεσμα στο state.
-5. Αν όχι, φτιάχνει prompts.
-6. Καλεί τον strict structured OpenAI wrapper.
-7. Παίρνει `ShieldOutput`.
-8. Κάνει normalization/hardening.
-9. Ενημερώνει state, logs, metadata.
-10. Επιστρέφει το νέο state.
-
----
-
-### Component diagram explanation
-
-Αυτό απαντά στην ερώτηση:
-
-**“Από ποια δομικά μέρη αποτελείται ο input shield agent;”**
-
-Η αφήγηση είναι:
-
-* Το **GraphState** δίνει το runtime context.
-* Το **input_shield_node** είναι ο orchestrator.
-* Το **input_guardrails.py** κάνει deterministic local safety checks.
-* Το **input_shield_prompts.py** χτίζει τα prompts.
-* Ο **AsyncOpenAIWrapper** αναλαμβάνει strict LLM execution.
-* Το **ShieldOutput** είναι το contract του agent.
-* Όλα μαζί συνθέτουν τον input shield agent.
 
 ---
 
@@ -527,11 +455,11 @@ input_shield_node(state)
 
 ### Sequence version
 
-> The input shield node first performs cheap deterministic checks, then, if needed, calls a strict structured LLM classification step, normalizes the result, logs metadata, and writes the decision back into graph state.
+> The input shield node reads GraphState, invokes `InputShieldOperation`, maps the outcome into `shield_result` / `workflow_outcome` / metadata, and returns. The operation owns fail-fast checks, prompts, max-prompt policy, `LLMPort` classification, and normalization/fallback.
 
 ### Component version
 
-> The input shield agent consists of a schema contract, heuristic guardrails, prompt builders, a strict async LLM wrapper, and a node orchestration layer that updates the graph state.
+> The input shield agent consists of a schema contract, heuristic guardrails, prompt builders, `InputShieldOperation` behind `LLMPort`/`AsyncOpenAIWrapper`, and a LangGraph node that owns GraphState orchestration.
 
 ---
 
@@ -540,11 +468,8 @@ input_shield_node(state)
 Το σημαντικό είναι να μη λες ότι:
 
 **“Ο input shield agent είναι ένα prompt.”**
+ή ότι **το node καλεί απευθείας τον OpenAI wrapper.**
 
 Το σωστό είναι:
 
-**“Ο input shield agent είναι ένα orchestrated safety subsystem composed of local guardrails, strict structured model classification, normalization logic, and state/logging integration.”**
-
-Αν θέλεις, στο επόμενο μήνυμα μπορώ να σου τα μετατρέψω και σε **Mermaid diagrams** για README ή documentation.
-
-
+**“Ο input shield είναι orchestrated safety subsystem: LangGraph node για GraphState/observability, Application Operation για prompt/LLM/use-case semantics.”**

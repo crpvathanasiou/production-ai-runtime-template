@@ -1,261 +1,140 @@
 import time
+from typing import Protocol
+
 from langsmith import traceable
 
-from app.core.exceptions import (
-    GuardrailBlockedError,
-    ModelOutputParsingError,
-    UpstreamServiceError,
-)
+from app.application.planner import PlannerOutcome
 from app.core.logging import bind_log_context, get_logger
-from app.core.settings import get_settings
 from app.graph_state import GraphState
-from app.llm.openai_wrapper import AsyncOpenAIWrapper
-from app.prompts.planner_prompts import (
-    build_planner_system_prompt,
-    build_planner_user_prompt,
-)
-from app.schemas import PlanStep, SupportAgentState
+from app.schemas import ShieldOutput, SupportTicket, TriageOutput
 
 logger = get_logger(__name__)
 
-
-def _normalize_planner_output(agent_state: SupportAgentState) -> SupportAgentState:
-    """
-    Final defensive normalization for planner output.
-    Ensures:
-    - every step starts as pending
-    - current_step_id points to the first step if missing
-    """
-    normalized_steps: list[PlanStep] = []
-
-    for step in agent_state.plan:
-        normalized_steps.append(
-            PlanStep(
-                step_id=step.step_id,
-                title=step.title,
-                description=step.description,
-                owner=step.owner,
-                status="pending",
-                requires_human_approval=step.requires_human_approval,
-                result=None,
-                error=None,
-            )
-        )
-
-    current_step_id = agent_state.current_step_id
-    if normalized_steps and not current_step_id:
-        current_step_id = normalized_steps[0].step_id
-
-    return SupportAgentState(
-        plan=normalized_steps,
-        current_step_id=current_step_id,
-    )
+_RECOVERED_ERROR_TYPES = frozenset(
+    {
+        "ModelOutputParsingError",
+        "UpstreamServiceError",
+    }
+)
 
 
-def _build_fallback_plan(state: GraphState) -> SupportAgentState:
-    """
-    Safe fallback plan if planner generation fails.
-    Keeps the workflow recoverable and reviewable.
-
-    Current baseline has no active retrieval source, so fallback must not
-    invent an unfulfillable retrieval dependency.
-    """
-    steps = [
-        PlanStep(
-            step_id="step_draft_response",
-            title="Draft cautious response",
-            description=(
-                "Draft a cautious customer response using only ticket and triage "
-                "context. Do not assume external policy/FAQ corpus grounding."
-            ),
-            owner="response_agent",
-            status="pending",
-        ),
-        PlanStep(
-            step_id="step_human_review",
-            title="Human review",
-            description=(
-                "Review the case and cautious draft before any final "
-                "customer-facing response."
-            ),
-            owner="human",
-            status="pending",
-            requires_human_approval=True,
-        ),
-    ]
-
-    return SupportAgentState(
-        plan=steps,
-        current_step_id=steps[0].step_id if steps else None,
-    )
+class SupportsPlannerExecute(Protocol):
+    async def execute(
+        self,
+        *,
+        ticket: SupportTicket,
+        shield_result: ShieldOutput,
+        triage_result: TriageOutput,
+    ) -> PlannerOutcome: ...
 
 
-@traceable(run_type="chain", name="planner_node")
-async def planner_node(state: GraphState) -> GraphState:
-    started = time.perf_counter()
-    request_id = state.request_id
-
-    logger.info(
-        "planner.started",
-        extra=bind_log_context(
-            request_id=request_id,
-            node_name="planner",
-        ),
-    )
-
-    if state.shield_result is None:
-        state.workflow_outcome = "blocked"
-        state.additional_metadata["planner_error"] = {
-            "request_id": request_id,
-            "error_type": "MissingShieldResult",
-            "message": "planner_node called without shield_result",
-        }
-        return state
-
-    if state.triage_result is None:
-        state.workflow_outcome = "blocked"
-        state.additional_metadata["planner_error"] = {
-            "request_id": request_id,
-            "error_type": "MissingTriageResult",
-            "message": "planner_node called without triage_result",
-        }
-        return state
-
-    settings = get_settings()
-    planner_model = getattr(
-        settings,
-        "openai_model_planner",
-        settings.openai_model_input_shield,
-    )
-
-    llm = AsyncOpenAIWrapper(
-        default_model=planner_model,
-        default_temperature=0.0,
-    )
-
-    system_prompt = build_planner_system_prompt()
-    user_prompt = build_planner_user_prompt(
-        ticket=state.initial_ticket,
-        shield_result=state.shield_result,
-        triage_result=state.triage_result,
-    )
-
-    try:
-        result = await llm.generate_structured(
-            system_prompt=system_prompt,
-            prompt=user_prompt,
-            response_schema=SupportAgentState,
-        )
-
-        parsed = result.parsed
-
-        if parsed is None:
-            raise ModelOutputParsingError("Parsed planner output is None.")
-
-        if not isinstance(parsed, SupportAgentState):
-            raise ModelOutputParsingError(
-                "Parsed planner output is not of type SupportAgentState."
-            )
-
-        normalized = _normalize_planner_output(parsed)
-
-        if not normalized.plan:
-            raise ModelOutputParsingError("Planner returned an empty plan.")
-
-        state.agent_state = normalized
-        state.workflow_outcome = "running"
-
-        state.additional_metadata["planner"] = {
-            "request_id": request_id,
-            "model_name": result.model_name,
-            "latency_ms": result.latency_ms,
-            "attempts": result.attempts,
-            "plan_length": len(normalized.plan),
-            "current_step_id": normalized.current_step_id,
-            "step_titles": [step.title for step in normalized.plan],
-        }
+def make_planner_node(
+    operation: SupportsPlannerExecute,
+    *,
+    model_name: str,
+):
+    @traceable(run_type="chain", name="planner_node")
+    async def planner_node(state: GraphState) -> GraphState:
+        started = time.perf_counter()
+        request_id = state.request_id
 
         logger.info(
-            "planner.completed",
+            "planner.started",
             extra=bind_log_context(
                 request_id=request_id,
                 node_name="planner",
-                model_name=result.model_name,
-                latency_ms=result.latency_ms,
-                attempts=result.attempts,
-                plan_length=len(normalized.plan),
-                current_step_id=normalized.current_step_id,
             ),
         )
 
-        return state
+        if state.shield_result is None:
+            state.workflow_outcome = "blocked"
+            state.additional_metadata["planner_error"] = {
+                "request_id": request_id,
+                "error_type": "MissingShieldResult",
+                "message": "planner_node called without shield_result",
+            }
+            return state
 
-    except GuardrailBlockedError as exc:
-        fallback = _build_fallback_plan(state)
-        state.agent_state = fallback
-        state.workflow_outcome = "needs_human_review"
-        state.additional_metadata["planner_error"] = {
-            "request_id": request_id,
-            "error_type": "GuardrailBlockedError",
-            "message": str(exc),
-            "fallback_plan_used": True,
-        }
+        if state.triage_result is None:
+            state.workflow_outcome = "blocked"
+            state.additional_metadata["planner_error"] = {
+                "request_id": request_id,
+                "error_type": "MissingTriageResult",
+                "message": "planner_node called without triage_result",
+            }
+            return state
 
-        logger.warning(
-            "planner.guardrail_blocked",
-            extra=bind_log_context(
-                request_id=request_id,
-                node_name="planner",
-                error_type="GuardrailBlockedError",
-            ),
+        outcome = await operation.execute(
+            ticket=state.initial_ticket,
+            shield_result=state.shield_result,
+            triage_result=state.triage_result,
         )
-        return state
 
-    except (ModelOutputParsingError, UpstreamServiceError) as exc:
+        state.agent_state = outcome.agent_state
+
+        if not outcome.fallback_used:
+            state.workflow_outcome = "running"
+
+            execution = outcome.execution
+            latency_ms = execution.latency_ms if execution is not None else 0.0
+            attempts = execution.attempts if execution is not None else 0
+
+            state.additional_metadata["planner"] = {
+                "request_id": request_id,
+                "model_name": model_name,
+                "latency_ms": latency_ms,
+                "attempts": attempts,
+                "plan_length": len(outcome.agent_state.plan),
+                "current_step_id": outcome.agent_state.current_step_id,
+                "step_titles": [step.title for step in outcome.agent_state.plan],
+            }
+
+            logger.info(
+                "planner.completed",
+                extra=bind_log_context(
+                    request_id=request_id,
+                    node_name="planner",
+                    model_name=model_name,
+                    latency_ms=latency_ms,
+                    attempts=attempts,
+                    plan_length=len(outcome.agent_state.plan),
+                    current_step_id=outcome.agent_state.current_step_id,
+                ),
+            )
+            return state
+
+        # fallback_used == True
         latency_ms = round((time.perf_counter() - started) * 1000, 2)
-        fallback = _build_fallback_plan(state)
-        state.agent_state = fallback
         state.workflow_outcome = "needs_human_review"
         state.additional_metadata["planner_error"] = {
             "request_id": request_id,
-            "error_type": exc.__class__.__name__,
-            "message": str(exc),
+            "error_type": outcome.error_type or "Exception",
+            "message": outcome.error_message or "",
             "latency_ms": latency_ms,
             "fallback_plan_used": True,
         }
 
-        logger.exception(
-            "planner.recovered_error",
-            extra=bind_log_context(
-                request_id=request_id,
-                node_name="planner",
-                error_type=exc.__class__.__name__,
-                latency_ms=latency_ms,
-            ),
-        )
+        error_type = outcome.error_type or "Exception"
+        if error_type in _RECOVERED_ERROR_TYPES:
+            logger.error(
+                "planner.recovered_error",
+                extra=bind_log_context(
+                    request_id=request_id,
+                    node_name="planner",
+                    error_type=error_type,
+                    latency_ms=latency_ms,
+                ),
+            )
+        else:
+            logger.error(
+                "planner.unexpected_error",
+                extra=bind_log_context(
+                    request_id=request_id,
+                    node_name="planner",
+                    error_type=error_type,
+                    latency_ms=latency_ms,
+                ),
+            )
         return state
 
-    except Exception as exc:
-        latency_ms = round((time.perf_counter() - started) * 1000, 2)
-        fallback = _build_fallback_plan(state)
-        state.agent_state = fallback
-        state.workflow_outcome = "needs_human_review"
-        state.additional_metadata["planner_error"] = {
-            "request_id": request_id,
-            "error_type": exc.__class__.__name__,
-            "message": str(exc),
-            "latency_ms": latency_ms,
-            "fallback_plan_used": True,
-        }
-
-        logger.exception(
-            "planner.unexpected_error",
-            extra=bind_log_context(
-                request_id=request_id,
-                node_name="planner",
-                error_type=exc.__class__.__name__,
-                latency_ms=latency_ms,
-            ),
-        )
-        return state
-
+    return planner_node

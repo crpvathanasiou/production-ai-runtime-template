@@ -1,7 +1,12 @@
+"""Execute-plan node tests — fake ResponseDraftingOperation; retrieval seams preserved."""
+
+from __future__ import annotations
+
 import pytest
 
+from app.application.ports.llm import LLMExecutionMetadata, StructuredLLMResult
 from app.graph_state import GraphState
-from app.nodes.execute_plan import execute_plan_node
+from app.nodes.execute_plan import make_execute_plan_node
 from app.schemas import (
     PlanStep,
     ResponseDrafting,
@@ -12,12 +17,63 @@ from app.schemas import (
 )
 
 
-class FakeLLMResult:
-    def __init__(self, parsed, model_name="gpt-4.1-mini", latency_ms=95.0, attempts=1):
-        self.parsed = parsed
-        self.model_name = model_name
-        self.latency_ms = latency_ms
-        self.attempts = attempts
+class FakeResponseDraftingOperation:
+    def __init__(
+        self,
+        *,
+        result: StructuredLLMResult[ResponseDrafting] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._result = result
+        self._error = error
+        self.calls: list[dict] = []
+
+    async def execute(
+        self,
+        *,
+        ticket: SupportTicket,
+        triage_result: TriageOutput,
+        retrieved_documents: list[RetrievedDocument],
+    ) -> StructuredLLMResult[ResponseDrafting]:
+        self.calls.append(
+            {
+                "ticket": ticket,
+                "triage_result": triage_result,
+                "retrieved_documents": retrieved_documents,
+            }
+        )
+        if self._error is not None:
+            raise self._error
+        if self._result is None:
+            raise AssertionError("FakeResponseDraftingOperation requires result or error")
+        return self._result
+
+
+def _triage() -> TriageOutput:
+    return TriageOutput(
+        issue_category="other",
+        intent="information_request",
+        urgency="low",
+        customer_tone="calm",
+        requires_escalation=False,
+        requires_human_approval=False,
+        reasoning_summary="Customer asks for general shipping information.",
+    )
+
+
+def _draft_result(
+    *,
+    text: str,
+    related: list[RetrievedDocument] | None = None,
+) -> StructuredLLMResult[ResponseDrafting]:
+    return StructuredLLMResult(
+        parsed=ResponseDrafting(
+            ticket_response=text,
+            related_documents=related or [],
+            unsupported_promises=False,
+        ),
+        execution=LLMExecutionMetadata(latency_ms=95.0, attempts=1),
+    )
 
 
 @pytest.mark.asyncio
@@ -41,6 +97,11 @@ async def test_execute_plan_node_retrieval_step_populates_documents(monkeypatch)
         fake_retrieve_relevant_documents,
     )
 
+    operation = FakeResponseDraftingOperation(
+        result=_draft_result(text="unused"),
+    )
+    node = make_execute_plan_node(operation, model_name="gpt-draft-test")
+
     state = GraphState(
         request_id="req-execute-001",
         initial_ticket=SupportTicket(
@@ -48,15 +109,7 @@ async def test_execute_plan_node_retrieval_step_populates_documents(monkeypatch)
             customer_metadata={},
             order_account_metadata={},
         ),
-        triage_result=TriageOutput(
-            issue_category="other",
-            intent="information_request",
-            urgency="low",
-            customer_tone="calm",
-            requires_escalation=False,
-            requires_human_approval=False,
-            reasoning_summary="Customer asks for general shipping information.",
-        ),
+        triage_result=_triage(),
         agent_state=SupportAgentState(
             plan=[
                 PlanStep(
@@ -71,7 +124,7 @@ async def test_execute_plan_node_retrieval_step_populates_documents(monkeypatch)
         ),
     )
 
-    updated_state = await execute_plan_node(state)
+    updated_state = await node(state)
 
     assert updated_state.retrieved_documents is not None
     assert len(updated_state.retrieved_documents) == 2
@@ -84,31 +137,24 @@ async def test_execute_plan_node_retrieval_step_populates_documents(monkeypatch)
 
     assert updated_state.workflow_outcome == "running"
     assert "execute_plan" in updated_state.additional_metadata
+    assert len(operation.calls) == 0
 
 
 @pytest.mark.asyncio
-async def test_execute_plan_node_explicit_retrieval_returning_empty_fails(monkeypatch):
+async def test_execute_plan_node_explicit_retrieval_returning_empty_fails():
     """
     Current baseline: inert retrieval entrypoint returns [].
     An explicitly requested retrieval step is unmet, not a false success.
     """
-
-    async def fake_generate_structured(self, *, system_prompt, prompt, response_schema):
-        return FakeLLMResult(
-            parsed=ResponseDrafting(
-                ticket_response=(
-                    "Thanks for reaching out. I do not have verified policy "
-                    "context available, so a human agent will review your request."
-                ),
-                related_documents=[],
-                unsupported_promises=False,
-            )
+    operation = FakeResponseDraftingOperation(
+        result=_draft_result(
+            text=(
+                "Thanks for reaching out. I do not have verified policy "
+                "context available, so a human agent will review your request."
+            ),
         )
-
-    monkeypatch.setattr(
-        "app.nodes.execute_plan.AsyncOpenAIWrapper.generate_structured",
-        fake_generate_structured,
     )
+    node = make_execute_plan_node(operation, model_name="gpt-draft-test")
 
     state = GraphState(
         request_id="req-execute-empty-retrieval",
@@ -147,7 +193,7 @@ async def test_execute_plan_node_explicit_retrieval_returning_empty_fails(monkey
         ),
     )
 
-    updated_state = await execute_plan_node(state)
+    updated_state = await node(state)
 
     assert updated_state.retrieved_documents == []
     assert updated_state.agent_state is not None
@@ -162,28 +208,24 @@ async def test_execute_plan_node_explicit_retrieval_returning_empty_fails(monkey
     assert draft_step.result == "Drafted customer response without retrieved context."
 
     assert updated_state.workflow_outcome == "needs_human_review"
+    assert len(operation.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_execute_plan_node_response_step_populates_response_draft(monkeypatch):
-    async def fake_generate_structured(self, *, system_prompt, prompt, response_schema):
-        return FakeLLMResult(
-            parsed=ResponseDrafting(
-                ticket_response="Thanks for reaching out. Shipping usually takes 3-5 business days.",
-                related_documents=[
-                    RetrievedDocument(
-                        source="faq.md",
-                        content="Shipping usually takes 3-5 business days.",
-                    )
-                ],
-                unsupported_promises=False,
-            )
+async def test_execute_plan_node_response_step_populates_response_draft():
+    related = [
+        RetrievedDocument(
+            source="faq.md",
+            content="Shipping usually takes 3-5 business days.",
         )
-
-    monkeypatch.setattr(
-        "app.nodes.execute_plan.AsyncOpenAIWrapper.generate_structured",
-        fake_generate_structured,
+    ]
+    operation = FakeResponseDraftingOperation(
+        result=_draft_result(
+            text="Thanks for reaching out. Shipping usually takes 3-5 business days.",
+            related=related,
+        )
     )
+    node = make_execute_plan_node(operation, model_name="gpt-draft-test")
 
     state = GraphState(
         request_id="req-execute-002",
@@ -192,27 +234,17 @@ async def test_execute_plan_node_response_step_populates_response_draft(monkeypa
             customer_metadata={},
             order_account_metadata={},
         ),
-        triage_result=TriageOutput(
-            issue_category="other",
-            intent="information_request",
-            urgency="low",
-            customer_tone="calm",
-            requires_escalation=False,
-            requires_human_approval=False,
-            reasoning_summary="Customer asks for general shipping information.",
-        ),
-        retrieved_documents=[
-            RetrievedDocument(
-                source="faq.md",
-                content="Shipping usually takes 3-5 business days.",
-            )
-        ],
+        triage_result=_triage(),
+        retrieved_documents=related,
         agent_state=SupportAgentState(
             plan=[
                 PlanStep(
                     step_id="step_draft_shipping_response",
                     title="Draft shipping response",
-                    description="Draft a grounded response for the customer using shipping FAQ context.",
+                    description=(
+                        "Draft a grounded response for the customer using "
+                        "shipping FAQ context."
+                    ),
                     owner="response_agent",
                     status="pending",
                 )
@@ -221,7 +253,7 @@ async def test_execute_plan_node_response_step_populates_response_draft(monkeypa
         ),
     )
 
-    updated_state = await execute_plan_node(state)
+    updated_state = await node(state)
 
     assert updated_state.response_draft is not None
     assert "3-5 business days" in updated_state.response_draft.ticket_response
@@ -236,30 +268,28 @@ async def test_execute_plan_node_response_step_populates_response_draft(monkeypa
     assert updated_state.agent_state.current_step_id is None
 
     assert updated_state.workflow_outcome == "running"
-    assert "response_drafting" in updated_state.additional_metadata
+    meta = updated_state.additional_metadata["response_drafting"]
+    assert meta["model_name"] == "gpt-draft-test"
+    assert meta["latency_ms"] == 95.0
+    assert meta["attempts"] == 1
+    assert meta["used_documents"] == 1
     assert "execute_plan" in updated_state.additional_metadata
+    assert len(operation.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_execute_plan_node_response_without_retrieved_context(monkeypatch):
+async def test_execute_plan_node_response_without_retrieved_context():
     """Drafting without retrieval evidence is non-grounded-by-corpus and valid."""
 
-    async def fake_generate_structured(self, *, system_prompt, prompt, response_schema):
-        return FakeLLMResult(
-            parsed=ResponseDrafting(
-                ticket_response=(
-                    "Thanks for your message. Based on the available ticket details, "
-                    "I can acknowledge your request and share next steps once verified."
-                ),
-                related_documents=[],
-                unsupported_promises=False,
-            )
+    operation = FakeResponseDraftingOperation(
+        result=_draft_result(
+            text=(
+                "Thanks for your message. Based on the available ticket details, "
+                "I can acknowledge your request and share next steps once verified."
+            ),
         )
-
-    monkeypatch.setattr(
-        "app.nodes.execute_plan.AsyncOpenAIWrapper.generate_structured",
-        fake_generate_structured,
     )
+    node = make_execute_plan_node(operation, model_name="gpt-draft-test")
 
     state = GraphState(
         request_id="req-execute-no-retrieval-draft",
@@ -268,15 +298,7 @@ async def test_execute_plan_node_response_without_retrieved_context(monkeypatch)
             customer_metadata={},
             order_account_metadata={},
         ),
-        triage_result=TriageOutput(
-            issue_category="other",
-            intent="information_request",
-            urgency="low",
-            customer_tone="calm",
-            requires_escalation=False,
-            requires_human_approval=False,
-            reasoning_summary="Customer asks for shipping information.",
-        ),
+        triage_result=_triage(),
         retrieved_documents=[],
         agent_state=SupportAgentState(
             plan=[
@@ -292,7 +314,7 @@ async def test_execute_plan_node_response_without_retrieved_context(monkeypatch)
         ),
     )
 
-    updated_state = await execute_plan_node(state)
+    updated_state = await node(state)
 
     assert updated_state.response_draft is not None
     assert updated_state.response_draft.related_documents == []
@@ -309,14 +331,11 @@ async def test_execute_plan_node_response_without_retrieved_context(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_execute_plan_node_failed_response_step_routes_to_human_review(monkeypatch):
-    async def fake_generate_structured(self, *, system_prompt, prompt, response_schema):
-        raise Exception("Simulated response drafting failure")
-
-    monkeypatch.setattr(
-        "app.nodes.execute_plan.AsyncOpenAIWrapper.generate_structured",
-        fake_generate_structured,
+async def test_execute_plan_node_failed_response_step_routes_to_human_review():
+    operation = FakeResponseDraftingOperation(
+        error=Exception("Simulated response drafting failure")
     )
+    node = make_execute_plan_node(operation, model_name="gpt-draft-test")
 
     state = GraphState(
         request_id="req-execute-003",
@@ -362,7 +381,7 @@ async def test_execute_plan_node_failed_response_step_routes_to_human_review(mon
         ),
     )
 
-    updated_state = await execute_plan_node(state)
+    updated_state = await node(state)
 
     assert updated_state.agent_state is not None
     assert len(updated_state.agent_state.plan) == 2
@@ -383,9 +402,7 @@ async def test_execute_plan_node_failed_response_step_routes_to_human_review(mon
 
 
 @pytest.mark.asyncio
-async def test_execute_plan_node_pending_human_step_forces_needs_human_review(
-    monkeypatch,
-):
+async def test_execute_plan_node_pending_human_step_forces_needs_human_review():
     """
     An explicit pending human PlanStep is a review gate.
 
@@ -393,27 +410,19 @@ async def test_execute_plan_node_pending_human_step_forces_needs_human_review(
     response drafting succeeds safely, workflow_outcome must become
     needs_human_review — not ordinary running.
     """
-
-    async def fake_generate_structured(self, *, system_prompt, prompt, response_schema):
-        return FakeLLMResult(
-            parsed=ResponseDrafting(
-                ticket_response=(
-                    "Thanks for reaching out. Shipping usually takes 3-5 business days."
-                ),
-                related_documents=[
-                    RetrievedDocument(
-                        source="faq.md",
-                        content="Shipping usually takes 3-5 business days.",
-                    )
-                ],
-                unsupported_promises=False,
-            )
+    related = [
+        RetrievedDocument(
+            source="faq.md",
+            content="Shipping usually takes 3-5 business days.",
         )
-
-    monkeypatch.setattr(
-        "app.nodes.execute_plan.AsyncOpenAIWrapper.generate_structured",
-        fake_generate_structured,
+    ]
+    operation = FakeResponseDraftingOperation(
+        result=_draft_result(
+            text="Thanks for reaching out. Shipping usually takes 3-5 business days.",
+            related=related,
+        )
     )
+    node = make_execute_plan_node(operation, model_name="gpt-draft-test")
 
     state = GraphState(
         request_id="req-execute-pending-human",
@@ -422,21 +431,8 @@ async def test_execute_plan_node_pending_human_step_forces_needs_human_review(
             customer_metadata={},
             order_account_metadata={},
         ),
-        triage_result=TriageOutput(
-            issue_category="other",
-            intent="information_request",
-            urgency="low",
-            customer_tone="calm",
-            requires_escalation=False,
-            requires_human_approval=False,
-            reasoning_summary="Customer asks for general shipping information.",
-        ),
-        retrieved_documents=[
-            RetrievedDocument(
-                source="faq.md",
-                content="Shipping usually takes 3-5 business days.",
-            )
-        ],
+        triage_result=_triage(),
+        retrieved_documents=related,
         agent_state=SupportAgentState(
             plan=[
                 PlanStep(
@@ -458,7 +454,7 @@ async def test_execute_plan_node_pending_human_step_forces_needs_human_review(
         ),
     )
 
-    updated_state = await execute_plan_node(state)
+    updated_state = await node(state)
 
     assert updated_state.agent_state is not None
     assert len(updated_state.agent_state.plan) == 2
@@ -475,3 +471,43 @@ async def test_execute_plan_node_pending_human_step_forces_needs_human_review(
     assert updated_state.workflow_outcome == "needs_human_review"
     assert updated_state.response_draft is not None
     assert updated_state.response_draft.unsupported_promises is False
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_node_missing_triage_fails_response_step():
+    operation = FakeResponseDraftingOperation(
+        result=_draft_result(text="unused"),
+    )
+    node = make_execute_plan_node(operation, model_name="gpt-draft-test")
+
+    state = GraphState(
+        request_id="req-execute-missing-triage",
+        initial_ticket=SupportTicket(
+            customer_message="Hello",
+            customer_metadata={},
+            order_account_metadata={},
+        ),
+        triage_result=None,
+        agent_state=SupportAgentState(
+            plan=[
+                PlanStep(
+                    step_id="step_draft_response",
+                    title="Draft response",
+                    description="Draft.",
+                    owner="response_agent",
+                    status="pending",
+                )
+            ],
+            current_step_id="step_draft_response",
+        ),
+    )
+
+    updated_state = await node(state)
+
+    assert updated_state.agent_state is not None
+    assert updated_state.agent_state.plan[0].status == "failed"
+    assert updated_state.agent_state.plan[0].error == (
+        "Missing triage_result for response drafting."
+    )
+    assert updated_state.workflow_outcome == "needs_human_review"
+    assert len(operation.calls) == 0

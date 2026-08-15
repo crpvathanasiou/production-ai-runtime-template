@@ -96,8 +96,8 @@ workflow_outcome ∈ {
   * γράφει `shield_result.decision = "block"` ή `"needs_clarification"`
 * αν περάσει τα deterministic checks:
 
-  * καλεί shield classification
-  * γράφει structured `ShieldOutput`
+  * το node καλεί `InputShieldOperation` (→ `LLMPort` → adapter)
+  * mapάρει structured `ShieldOutput` / `InputShieldOutcome` στο GraphState
 * `workflow_outcome`:
 
   * `blocked` όταν `decision == "block"`
@@ -109,8 +109,8 @@ workflow_outcome ∈ {
 
 * recoverable:
 
-  * αν αποτύχει το shield classification, μπορεί να γράψει cautious fallback
-  * συνήθως `needs_human_review` ή conservative block
+  * αν αποτύχει το shield classification, η `InputShieldOperation` μπορεί να γράψει cautious fallback
+  * το node mapάρει το outcome· συνήθως `needs_human_review` ή conservative block
 * non-recoverable:
 
   * block workflow
@@ -123,10 +123,12 @@ workflow_outcome ∈ {
 
 ### Ownership boundary
 
-* κάνει input safety / scope classification
+* το node: orchestration prerequisites, GraphState mapping, `request_id`/logging/`workflow_outcome`
+* η `InputShieldOperation`: fail-fast, prompts, max-prompt policy, LLMPort call, normalization/fallback
 * **δεν** κάνει triage
 * **δεν** φτιάχνει execution plan
 * **δεν** παράγει customer response
+* **δεν** καλεί απευθείας OpenAI / δεν κατασκευάζει provider
 
 ---
 
@@ -157,8 +159,9 @@ workflow_outcome ∈ {
 
 ### Update rules
 
-* καλεί triage classification
-* γράφει structured `TriageOutput`
+* το node επικυρώνει orchestration prerequisites
+* καλεί `TriageOperation` (→ `LLMPort` → adapter)
+* mapάρει result/failure σε GraphState / `workflow_outcome`
 * `workflow_outcome`:
 
   * συνήθως `running` όταν το triage ολοκληρωθεί
@@ -182,10 +185,12 @@ workflow_outcome ∈ {
 
 ### Ownership boundary
 
-* κάνει ticket interpretation
+* το node: prerequisites, GraphState/`workflow_outcome` mapping, metadata
+* η `TriageOperation`: triage LLM use-case / prompt invocation via `LLMPort`
 * **δεν** κάνει retrieval
 * **δεν** γράφει response draft
 * **δεν** φτιάχνει plan execution artifacts
+* **δεν** καλεί απευθείας OpenAI / δεν κατασκευάζει provider
 
 ---
 
@@ -218,9 +223,11 @@ workflow_outcome ∈ {
 
 ### Update rules
 
-* καλεί planner generation
-* γράφει structured `SupportAgentState`
-* κάνει normalization:
+* το node επικυρώνει prerequisites
+* καλεί `PlannerOperation` (→ `LLMPort` → adapter)
+* η operation παράγει structured `SupportAgentState`, κάνει normalization, και (σε recoverable failure) fallback plan
+* το node mapάρει normal/fallback `PlannerOutcome` στο GraphState / `workflow_outcome`
+* normalization (operation-owned):
 
   * όλα τα steps ξεκινούν `pending`
   * `current_step_id` δείχνει στο πρώτο step αν λείπει
@@ -249,10 +256,13 @@ workflow_outcome ∈ {
 
 ### Ownership boundary
 
-* αποφασίζει **τι πρέπει να γίνει**
+* το node: prerequisites, GraphState/`workflow_outcome` mapping, metadata
+* η `PlannerOperation`: plan generation, normalization, fallback via `LLMPort`
+* αποφασίζει **τι πρέπει να γίνει** (plan semantics)
 * **δεν** κάνει retrieval
 * **δεν** συντάσσει response
 * **δεν** κάνει semantic validation
+* **δεν** καλεί απευθείας OpenAI / δεν κατασκευάζει provider
 
 ---
 
@@ -301,8 +311,9 @@ workflow_outcome ∈ {
   * σε exception → `failed`
 * για `response_agent` step:
 
-  * φτιάχνει draft
-  * γράφει `response_draft`
+  * orchestrates το PlanStep
+  * delegates drafting generation σε `ResponseDraftingOperation` (→ `LLMPort` → adapter)
+  * mapάρει `response_draft`
   * με retrieved evidence → grounded result
   * χωρίς retrieved evidence → cautious non-corpus-grounded result
   * step → `completed`
@@ -338,10 +349,13 @@ workflow_outcome ∈ {
 
 ### Ownership boundary
 
-* εκτελεί το plan
+* εκτελεί το plan (PlanStep orchestration)
+* retrieval-shaped execution: current seeded placement; unchanged by M1
+* drafting generation delegated to `ResponseDraftingOperation`
 * **δεν** αποφασίζει policy correctness
 * **δεν** κάνει human review
 * **δεν** κλείνει το workflow
+* **δεν** καλεί απευθείας OpenAI για drafting / δεν κατασκευάζει provider
 
 ---
 

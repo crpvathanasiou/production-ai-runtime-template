@@ -1,4 +1,4 @@
-# Handoff — current continuation state
+﻿# Handoff — current continuation state
 
 ONE shared, tool-neutral continuation document for ChatGPT, Cursor, humans, and future AI engineering tools.
 
@@ -39,59 +39,81 @@ Architecture: **APPROVED**
 
 Delivery structure: **ONE M1 / TWO INTERNAL CHECKPOINTS**
 
-Template Readiness governance integration: established as the required pre-M1 documentation boundary.
+Implementation state:
+
+- Internal Checkpoint 1 — complete / reviewed
+- Internal Checkpoint 2 runtime migration — complete / reviewed
+- documentation reconciliation — complete
+- final M1 validation — complete (commands below)
+
+**M1 is NOT COMMITTED.** Git has not established the M1 boundary. Await ChatGPT final review before any M1 commit.
 
 ## Last approved milestone
 
 M0B (and Template Readiness governance integration as the pre-M1 documentation boundary)
 
-## Current implementation position
+## Current M1 architecture implemented
 
-Internal Checkpoint 1 / Prompt 1 — correction/review cycle
+```text
+LangGraph Node
+  → Application Operation
+  → LLMPort
+  → AsyncOpenAIWrapper / OpenAI
+```
 
-- Prompt 2: **NOT YET AUTHORIZED**
-- Internal Checkpoint 2: **NOT YET AUTHORIZED**
+Explicit composition: `app/composition.py` (`build_runtime_graph()`)
+
+Live Application Operations:
+
+- `InputShieldOperation`
+- `TriageOperation`
+- `PlannerOperation`
+- `ResponseDraftingOperation`
 
 ## Latest validation
 
-Factual pre-M1 runtime baseline (before Prompt-1 runtime work):
+Final M1 documentation-reconciliation validation (this prompt):
 
-- `poetry run pytest` — **31 passed**
-- `poetry run pyright` — **1 known M1-related error** at `app/nodes/input_shield.py:157`
-- `poetry run ruff check .` — **119 existing errors**
+- `poetry run pytest` — **74 passed**
+- `poetry run pyright` — **0 errors**
+- `poetry run ruff check .` — **104 existing Ruff errors remain.** Pre-M1 baseline was 119; M1 introduced no new Ruff violations and reduced the count only through files already touched by M1. No unrelated repository-wide Ruff cleanup was performed.
+- `git diff --check` — **PASS**
 
-Do not treat uncommitted Prompt-1 results as an approved milestone result yet.
+Committed HEAD at start of this prompt: `e8e213e` (`docs: integrate template readiness governance`). M1 runtime + docs remain uncommitted.
 
 ## Known baseline debt
 
-Classification: **pre-existing seeded-runtime condition**, not addressed by documentation/governance work alone.
+Classification: **pre-existing / later readiness**, not closed by M1.
 
-Also unchanged (out of current governance scope unless a later approved milestone says otherwise):
-
+- repository-wide Ruff debt still exists (**104**); Template **READY** is **NOT** achieved
+- M1 introduced no new Ruff violations. New M1 files and the targeted migrated files passed Ruff checks; pre-existing Ruff debt remains in existing files such as `openai_wrapper.py` / `run_graph_once.py`.
+- Prompt Identity / Immutable Prompt Resolution — not implemented (likely next major readiness gap)
+- `ExecutionContext` — not implemented
+- `TelemetryPort` / application telemetry boundary — not implemented
+- controlled tool executor / RAG backend / durable HITL / CI readiness closure — not implemented
 - `.env.example` incomplete vs required `OPENAI_API_KEY`
 - `docker-compose.yaml` still uses `fastapi-prod-starter-*` names
 - `scripts/test.ps1`, `lint.ps1`, `typecheck.ps1` contain commented commands
 
-**SURFACE DISCREPANCY (docs vs runtime):** target ports/adapters, `ExecutionContext`, prompt identity, and `ToolRequest`/`ToolResult` are documented as approved target; seeded `app/` does not fully implement them yet. M1 Internal Checkpoint 1 begins the application LLM boundary only.
+**SURFACE DISCREPANCY (narrowed after M1):** Application LLM boundary (`LLMPort` + Operations + composition) is implemented for active LLM paths. Remaining approved-target gaps that are still absent: Prompt Identity / `PromptRepository`, `ExecutionContext`, Telemetry, `ToolRequest`/`ToolResult` controlled execution, and other Template Readiness items. Do not treat Template READY as achieved.
 
 ## Continuation-impacting blockers
 
-None for starting/completing the authorized Prompt-1 correction/review cycle.
-
-Prompt 2 and Internal Checkpoint 2 remain unauthorized until ChatGPT review explicitly allows them.
+None for ChatGPT final M1 review.
 
 ## Next approved action
 
-Complete/review M1 Internal Checkpoint 1 / Prompt 1 correction → ChatGPT review → only then authorize Prompt 2.
+ChatGPT final M1 review → if approved, **ONE M1 Git boundary** (commit of reviewed M1 runtime + documentation).
 
 ## Forbidden / unapproved next actions
 
-- Prompt 2 before ChatGPT review / explicit authorization
-- Internal Checkpoint 2
+- M1 commit without ChatGPT final review / explicit authorization
 - Prompt M2
 - introducing `ExecutionContext`
 - introducing Telemetry / `TelemetryPort`
+- Prompt Identity / `PromptRepository` implementation
 - RAG implementation
-- unrelated cleanup
+- unrelated readiness cleanup / repository-wide Ruff cleanup
 - unapproved architecture or scope changes
+- declaring TEMPLATE READY
 - tool-specific parallel handoff/status files

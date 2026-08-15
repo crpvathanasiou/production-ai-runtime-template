@@ -72,7 +72,7 @@ Approved model:
 Client → FastAPI / Delivery Adapter → [optional LangGraph] → Application Core → Ports → outbound adapters
 ```
 
-FastAPI may call the application core without LangGraph. The seeded runtime does not yet implement that model (`SURFACE DISCREPANCY` if treated as done).
+FastAPI may call the application core without LangGraph. After M1, active LLM paths follow Application Operation → `LLMPort` → OpenAI adapter with explicit composition; LangGraph remains the active seeded orchestration example; FastAPI still exposes health/version only (no project/business use-case endpoint yet). Prompt Identity, ExecutionContext, Telemetry, and other readiness gaps remain (`SURFACE DISCREPANCY` if treated as complete Template READY).
 
 Presence on the deferred register is not permission to implement.
 

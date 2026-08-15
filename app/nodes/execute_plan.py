@@ -1,18 +1,31 @@
 import time
+from typing import Protocol
+
 from langsmith import traceable
 
+from app.application.ports.llm import StructuredLLMResult
 from app.core.logging import bind_log_context, get_logger
-from app.core.settings import get_settings
 from app.graph_state import GraphState
-from app.llm.openai_wrapper import AsyncOpenAIWrapper
-from app.prompts.response_drafting_prompts import (
-    build_response_drafting_system_prompt,
-    build_response_drafting_user_prompt,
+from app.schemas import (
+    PlanStep,
+    ResponseDrafting,
+    RetrievedDocument,
+    SupportTicket,
+    TriageOutput,
 )
-from app.schemas import PlanStep, ResponseDrafting
 from app.services.retrieval_service import retrieve_relevant_documents
 
 logger = get_logger(__name__)
+
+
+class SupportsResponseDraftingExecute(Protocol):
+    async def execute(
+        self,
+        *,
+        ticket: SupportTicket,
+        triage_result: TriageOutput,
+        retrieved_documents: list[RetrievedDocument],
+    ) -> StructuredLLMResult[ResponseDrafting]: ...
 
 
 # This helper creates a fresh copy of a step and marks it as completed.
@@ -83,7 +96,7 @@ def _mark_step_pending(step: PlanStep) -> PlanStep:
 # step.description = "Retrieve refund and billing policy relevant to the ticket"
 # triage.issue_category = "refund"
 # triage.intent = "complaint"
-# Result: I was charged twice and want a refund Retrieve refund policy 
+# Result: I was charged twice and want a refund Retrieve refund policy
 # Retrieve refund and billing policy relevant to the ticket refund complaint ...
 def _build_retrieval_query(state: GraphState, step: PlanStep) -> str:
     triage = state.triage_result
@@ -148,51 +161,26 @@ async def _execute_retrieval_step(state: GraphState, step: PlanStep) -> tuple[Pl
     return updated_step, len(documents)
 
 
-# Execute a response drafting step.
-#
-# What happens here:
-# 1. Read triage + retrieved documents from state
-# 2. Build a drafting prompt
-# 3. Ask the LLM for a structured ResponseDrafting object
-# 4. Save it into state.response_draft
-# 5. Mark the step as completed
-#
-# This is the point where the workflow creates the customer-facing draft.
-# The guardrails node will validate this artifact next.
-async def _execute_response_step(state: GraphState, step: PlanStep) -> PlanStep:
+# Execute a response drafting step via the injected Application Operation.
+async def _execute_response_step(
+    state: GraphState,
+    step: PlanStep,
+    *,
+    response_drafting_operation: SupportsResponseDraftingExecute,
+    model_name: str,
+) -> PlanStep:
     # We require triage before drafting because the draft should reflect
     # issue type, urgency, tone, and human-review sensitivity.
     if state.triage_result is None:
         return _mark_step_failed(step, "Missing triage_result for response drafting.")
 
-    settings = get_settings()
-    drafting_model = getattr(
-        settings,
-        "openai_model_response_drafting",
-        settings.openai_model_planner,
-    )
-
-    llm = AsyncOpenAIWrapper(
-        default_model=drafting_model,
-        default_temperature=0.0,
-    )
-
-    system_prompt = build_response_drafting_system_prompt()
-    user_prompt = build_response_drafting_user_prompt(
+    result = await response_drafting_operation.execute(
         ticket=state.initial_ticket,
         triage_result=state.triage_result,
         retrieved_documents=state.retrieved_documents or [],
     )
 
-    result = await llm.generate_structured(
-        system_prompt=system_prompt,
-        prompt=user_prompt,
-        response_schema=ResponseDrafting,
-    )
-
     parsed = result.parsed
-    if parsed is None or not isinstance(parsed, ResponseDrafting):
-        return _mark_step_failed(step, "Response drafting returned invalid structured output.")
 
     # Save the draft into state.
     # This becomes the main input for the guardrails node.
@@ -201,9 +189,9 @@ async def _execute_response_step(state: GraphState, step: PlanStep) -> PlanStep:
     # Save useful execution metadata for tracing/debugging.
     state.additional_metadata["response_drafting"] = {
         "request_id": state.request_id,
-        "model_name": result.model_name,
-        "latency_ms": result.latency_ms,
-        "attempts": result.attempts,
+        "model_name": model_name,
+        "latency_ms": result.execution.latency_ms,
+        "attempts": result.execution.attempts,
         "used_documents": len(parsed.related_documents),
     }
 
@@ -217,130 +205,142 @@ async def _execute_response_step(state: GraphState, step: PlanStep) -> PlanStep:
     return _mark_step_completed(step, result=result_summary)
 
 
-# Main executor node.
-#
-# This node is the "Act" part of the pattern:
-# Plan -> Act -> Validate
-#
-# Upstream:
-# - planner created the plan
-#
-# This node:
-# - reads the plan
-# - executes supported steps
-# - updates state artifacts
-#
-# Downstream:
-# - guardrails validates the drafted response
-@traceable(run_type="chain", name="execute_plan_node")
-async def execute_plan_node(state: GraphState) -> GraphState:
-    started = time.perf_counter()
-    request_id = state.request_id
+def make_execute_plan_node(
+    response_drafting_operation: SupportsResponseDraftingExecute,
+    *,
+    model_name: str,
+):
+    # Main executor node.
+    #
+    # This node is the "Act" part of the pattern:
+    # Plan -> Act -> Validate
+    #
+    # Upstream:
+    # - planner created the plan
+    #
+    # This node:
+    # - reads the plan
+    # - executes supported steps
+    # - updates state artifacts
+    #
+    # Downstream:
+    # - guardrails validates the drafted response
+    @traceable(run_type="chain", name="execute_plan_node")
+    async def execute_plan_node(state: GraphState) -> GraphState:
+        started = time.perf_counter()
+        request_id = state.request_id
 
-    logger.info(
-        "execute_plan.started",
-        extra=bind_log_context(
-            request_id=request_id,
-            node_name="execute_plan",
-        ),
-    )
+        logger.info(
+            "execute_plan.started",
+            extra=bind_log_context(
+                request_id=request_id,
+                node_name="execute_plan",
+            ),
+        )
 
-    # Safety check:
-    # if there is no plan, this node has nothing meaningful to execute.
-    if state.agent_state is None or not state.agent_state.plan:
-        state.workflow_outcome = "blocked"
-        state.additional_metadata["execute_plan_error"] = {
+        # Safety check:
+        # if there is no plan, this node has nothing meaningful to execute.
+        if state.agent_state is None or not state.agent_state.plan:
+            state.workflow_outcome = "blocked"
+            state.additional_metadata["execute_plan_error"] = {
+                "request_id": request_id,
+                "error_type": "MissingPlan",
+                "message": "execute_plan_node called without an executable plan.",
+            }
+            return state
+
+        updated_plan: list[PlanStep] = []
+        retrieval_count = 0
+
+        # Walk through the plan in order.
+        # For v1, we support:
+        # - retrieval_agent steps
+        # - response_agent steps
+        # - human steps (kept pending)
+        for step in state.agent_state.plan:
+            # Retrieval-shaped steps: build query → call entrypoint → store returned docs.
+            if step.owner == "retrieval_agent" and step.status == "pending":
+                try:
+                    updated_step, docs_count = await _execute_retrieval_step(state, step)
+                    retrieval_count += docs_count
+                    updated_plan.append(updated_step)
+                except Exception as exc:
+                    # Important production-minded behavior:
+                    # one step failure should not crash the whole workflow.
+                    updated_plan.append(_mark_step_failed(step, str(exc)))
+
+            # Response steps create the customer-facing draft.
+            elif step.owner == "response_agent" and step.status == "pending":
+                try:
+                    updated_step = await _execute_response_step(
+                        state,
+                        step,
+                        response_drafting_operation=response_drafting_operation,
+                        model_name=model_name,
+                    )
+                    updated_plan.append(updated_step)
+                except Exception as exc:
+                    updated_plan.append(_mark_step_failed(step, str(exc)))
+
+            # Human steps are intentionally not executed here.
+            # They remain pending so that the human_review node can handle them later.
+            elif step.owner == "human":
+                updated_plan.append(_mark_step_pending(step))
+
+            # Any unsupported or already-resolved steps are carried forward unchanged.
+            else:
+                updated_plan.append(step)
+
+        # Save the updated plan back into the graph state.
+        state.agent_state.plan = updated_plan
+        state.agent_state.current_step_id = _get_next_pending_step_id(updated_plan)
+
+        failed_steps = [step for step in updated_plan if step.status == "failed"]
+        pending_human_steps = [
+            step
+            for step in updated_plan
+            if step.owner == "human" and step.status == "pending"
+        ]
+
+        # Decide the current workflow outcome after execution.
+        #
+        # Failed steps and unresolved human PlanSteps are explicit human-review gates.
+        # Only when neither applies does the workflow stay "running".
+        if failed_steps:
+            state.workflow_outcome = "needs_human_review"
+        elif pending_human_steps:
+            state.workflow_outcome = "needs_human_review"
+        else:
+            state.workflow_outcome = "running"
+
+        latency_ms = round((time.perf_counter() - started) * 1000, 2)
+
+        # Store execution metadata for observability.
+        # This helps later with:
+        # - debugging
+        # - tracing
+        # - latency inspection
+        # - future metrics collection
+        state.additional_metadata["execute_plan"] = {
             "request_id": request_id,
-            "error_type": "MissingPlan",
-            "message": "execute_plan_node called without an executable plan.",
+            "latency_ms": latency_ms,
+            "retrieved_documents_count": len(state.retrieved_documents or []),
+            "failed_steps": [step.step_id for step in failed_steps],
+            "next_step_id": state.agent_state.current_step_id,
         }
+
+        logger.info(
+            "execute_plan.completed",
+            extra=bind_log_context(
+                request_id=request_id,
+                node_name="execute_plan",
+                latency_ms=latency_ms,
+                retrieved_documents_count=len(state.retrieved_documents or []),
+                failed_steps=len(failed_steps),
+                next_step_id=state.agent_state.current_step_id,
+            ),
+        )
+
         return state
 
-    updated_plan: list[PlanStep] = []
-    retrieval_count = 0
-
-    # Walk through the plan in order.
-    # For v1, we support:
-    # - retrieval_agent steps
-    # - response_agent steps
-    # - human steps (kept pending)
-    for step in state.agent_state.plan:
-        # Retrieval-shaped steps: build query → call entrypoint → store returned docs.
-        if step.owner == "retrieval_agent" and step.status == "pending":
-            try:
-                updated_step, docs_count = await _execute_retrieval_step(state, step)
-                retrieval_count += docs_count
-                updated_plan.append(updated_step)
-            except Exception as exc:
-                # Important production-minded behavior:
-                # one step failure should not crash the whole workflow.
-                updated_plan.append(_mark_step_failed(step, str(exc)))
-
-        # Response steps create the customer-facing draft.
-        elif step.owner == "response_agent" and step.status == "pending":
-            try:
-                updated_step = await _execute_response_step(state, step)
-                updated_plan.append(updated_step)
-            except Exception as exc:
-                updated_plan.append(_mark_step_failed(step, str(exc)))
-
-        # Human steps are intentionally not executed here.
-        # They remain pending so that the human_review node can handle them later.
-        elif step.owner == "human":
-            updated_plan.append(_mark_step_pending(step))
-
-        # Any unsupported or already-resolved steps are carried forward unchanged.
-        else:
-            updated_plan.append(step)
-
-    # Save the updated plan back into the graph state.
-    state.agent_state.plan = updated_plan
-    state.agent_state.current_step_id = _get_next_pending_step_id(updated_plan)
-
-    failed_steps = [step for step in updated_plan if step.status == "failed"]
-    pending_human_steps = [
-        step
-        for step in updated_plan
-        if step.owner == "human" and step.status == "pending"
-    ]
-
-    # Decide the current workflow outcome after execution.
-    #
-    # Failed steps and unresolved human PlanSteps are explicit human-review gates.
-    # Only when neither applies does the workflow stay "running".
-    if failed_steps:
-        state.workflow_outcome = "needs_human_review"
-    elif pending_human_steps:
-        state.workflow_outcome = "needs_human_review"
-    else:
-        state.workflow_outcome = "running"
-
-    latency_ms = round((time.perf_counter() - started) * 1000, 2)
-
-    # Store execution metadata for observability.
-    # This helps later with:
-    # - debugging
-    # - tracing
-    # - latency inspection
-    # - future metrics collection
-    state.additional_metadata["execute_plan"] = {
-        "request_id": request_id,
-        "latency_ms": latency_ms,
-        "retrieved_documents_count": len(state.retrieved_documents or []),
-        "failed_steps": [step.step_id for step in failed_steps],
-        "next_step_id": state.agent_state.current_step_id,
-    }
-
-    logger.info(
-        "execute_plan.completed",
-        extra=bind_log_context(
-            request_id=request_id,
-            node_name="execute_plan",
-            latency_ms=latency_ms,
-            retrieved_documents_count=len(state.retrieved_documents or []),
-            failed_steps=len(failed_steps),
-            next_step_id=state.agent_state.current_step_id,
-        ),
-    )
-
-    return state
+    return execute_plan_node

@@ -1,7 +1,16 @@
+"""Planner node adapter tests — fake Application Operations only."""
+
+from __future__ import annotations
+
+import inspect
+
 import pytest
 
+import app.nodes.planner as planner_module
+from app.application.planner import PlannerOutcome
+from app.application.ports.llm import LLMExecutionMetadata
 from app.graph_state import GraphState
-from app.nodes.planner import planner_node
+from app.nodes.planner import make_planner_node
 from app.schemas import (
     PlanStep,
     ShieldOutput,
@@ -11,231 +20,271 @@ from app.schemas import (
 )
 
 
-class FakeLLMResult:
-    def __init__(self, parsed, model_name="gpt-4.1-mini", latency_ms=120.5, attempts=1):
-        self.parsed = parsed
-        self.model_name = model_name
-        self.latency_ms = latency_ms
-        self.attempts = attempts
+class FakePlannerOperation:
+    def __init__(self, outcome: PlannerOutcome) -> None:
+        self._outcome = outcome
+        self.calls: list[dict] = []
 
-
-@pytest.mark.asyncio
-async def test_planner_node_simple_informational_ticket(monkeypatch):
-    """
-    Current-baseline happy path:
-    ordinary low-risk informational request drafts without unnecessary retrieval.
-    """
-
-    async def fake_generate_structured(self, *, system_prompt, prompt, response_schema):
-        return FakeLLMResult(
-            parsed=SupportAgentState(
-                plan=[
-                    PlanStep(
-                        step_id="step_draft_info_response",
-                        title="Draft informational response",
-                        description=(
-                            "Draft a cautious informational response using ticket "
-                            "and triage context only."
-                        ),
-                        owner="response_agent",
-                        status="pending",
-                    ),
-                ],
-                current_step_id="step_draft_info_response",
-            )
+    async def execute(
+        self,
+        *,
+        ticket: SupportTicket,
+        shield_result: ShieldOutput,
+        triage_result: TriageOutput,
+    ) -> PlannerOutcome:
+        self.calls.append(
+            {
+                "ticket": ticket,
+                "shield_result": shield_result,
+                "triage_result": triage_result,
+            }
         )
+        return self._outcome
 
-    monkeypatch.setattr(
-        "app.nodes.planner.AsyncOpenAIWrapper.generate_structured",
-        fake_generate_structured,
+
+def _ticket() -> SupportTicket:
+    return SupportTicket(
+        customer_message="Can you tell me how long shipping usually takes?",
+        customer_metadata={},
+        order_account_metadata={},
     )
 
-    state = GraphState(
-        request_id="req-test-001",
-        initial_ticket=SupportTicket(
-            customer_message="Can you tell me how long shipping usually takes?",
-            customer_metadata={},
-            order_account_metadata={},
-        ),
-        shield_result=ShieldOutput(
-            decision="allow",
-            risk_level="low",
-            categories=["valid_support_request"],
-            sanitized_message="Can you tell me how long shipping usually takes?",
-            should_route_to_human=False,
-            clarification_question=None,
-            reasoning="Valid support request.",
-        ),
-        triage_result=TriageOutput(
-            issue_category="other",
-            intent="information_request",
-            urgency="low",
-            customer_tone="calm",
-            requires_escalation=False,
-            requires_human_approval=False,
-            reasoning_summary="Customer is asking for general shipping information.",
-        ),
+
+def _shield() -> ShieldOutput:
+    return ShieldOutput(
+        decision="allow",
+        risk_level="low",
+        categories=["valid_support_request"],
+        sanitized_message="Can you tell me how long shipping usually takes?",
+        should_route_to_human=False,
+        clarification_question=None,
+        reasoning="Valid support request.",
     )
 
-    updated_state = await planner_node(state)
 
-    assert updated_state.agent_state is not None
-    assert len(updated_state.agent_state.plan) == 1
-    assert updated_state.agent_state.current_step_id == "step_draft_info_response"
-    assert updated_state.workflow_outcome == "running"
-
-    owners = [step.owner for step in updated_state.agent_state.plan]
-    assert "retrieval_agent" not in owners
-    assert "response_agent" in owners
-
-
-@pytest.mark.asyncio
-async def test_planner_node_can_carry_retrieval_capable_plan_shape(monkeypatch):
-    """
-    Proves the plan contract can still carry a retrieval_agent step.
-    This does NOT prove an active retrieval backend exists.
-    """
-
-    async def fake_generate_structured(self, *, system_prompt, prompt, response_schema):
-        return FakeLLMResult(
-            parsed=SupportAgentState(
-                plan=[
-                    PlanStep(
-                        step_id="step_retrieve_refund_policy",
-                        title="Retrieve refund policy",
-                        description="Retrieve refund and billing policy relevant to the ticket.",
-                        owner="retrieval_agent",
-                        status="pending",
-                    ),
-                    PlanStep(
-                        step_id="step_draft_refund_response",
-                        title="Draft refund response",
-                        description="Draft a refund response grounded in the refund policy.",
-                        owner="response_agent",
-                        status="pending",
-                    ),
-                    PlanStep(
-                        step_id="step_human_review",
-                        title="Human review",
-                        description="Review the refund case before any final response.",
-                        owner="human",
-                        status="pending",
-                        requires_human_approval=True,
-                    ),
-                ],
-                current_step_id="step_retrieve_refund_policy",
-            )
-        )
-
-    monkeypatch.setattr(
-        "app.nodes.planner.AsyncOpenAIWrapper.generate_structured",
-        fake_generate_structured,
+def _triage() -> TriageOutput:
+    return TriageOutput(
+        issue_category="other",
+        intent="information_request",
+        urgency="low",
+        customer_tone="calm",
+        requires_escalation=False,
+        requires_human_approval=False,
+        reasoning_summary="Customer is asking for general shipping information.",
     )
 
-    state = GraphState(
-        request_id="req-test-002",
-        initial_ticket=SupportTicket(
-            customer_message="I was charged twice and I want a refund immediately.",
-            customer_metadata={},
-            order_account_metadata={"order_id": "ORD-123"},
-        ),
-        shield_result=ShieldOutput(
-            decision="allow_with_flag",
-            risk_level="medium",
-            categories=["valid_support_request", "policy_bypass_attempt"],
-            sanitized_message="I was charged twice and I want a refund immediately.",
-            should_route_to_human=False,
-            clarification_question=None,
-            reasoning="Valid support request with elevated policy risk.",
-        ),
-        triage_result=TriageOutput(
-            issue_category="refund",
-            intent="complaint",
-            urgency="high",
-            customer_tone="frustrated",
-            requires_escalation=False,
-            requires_human_approval=True,
-            reasoning_summary=(
-                "Refund-related complaint that should be reviewed by a "
-                "human before final response."
+
+def _simple_plan() -> SupportAgentState:
+    return SupportAgentState(
+        plan=[
+            PlanStep(
+                step_id="step_draft_info_response",
+                title="Draft informational response",
+                description="Draft a cautious informational response.",
+                owner="response_agent",
+                status="pending",
             ),
-        ),
+        ],
+        current_step_id="step_draft_info_response",
     )
 
-    updated_state = await planner_node(state)
 
-    assert updated_state.agent_state is not None
-    assert len(updated_state.agent_state.plan) == 3
-    assert updated_state.workflow_outcome == "running"
+def _fallback_plan() -> SupportAgentState:
+    return SupportAgentState(
+        plan=[
+            PlanStep(
+                step_id="step_draft_response",
+                title="Draft cautious response",
+                description="Draft a cautious customer response.",
+                owner="response_agent",
+                status="pending",
+            ),
+            PlanStep(
+                step_id="step_human_review",
+                title="Human review",
+                description="Review before final response.",
+                owner="human",
+                status="pending",
+                requires_human_approval=True,
+            ),
+        ],
+        current_step_id="step_draft_response",
+    )
 
-    owners = [step.owner for step in updated_state.agent_state.plan]
+
+@pytest.mark.asyncio
+async def test_planner_node_missing_shield_blocked():
+    operation = FakePlannerOperation(
+        PlannerOutcome(
+            agent_state=_simple_plan(),
+            execution=None,
+            fallback_used=False,
+            error_type=None,
+            error_message=None,
+        )
+    )
+    node = make_planner_node(operation, model_name="gpt-planner-test")
+    state = GraphState(
+        request_id="req-planner-001",
+        initial_ticket=_ticket(),
+        triage_result=_triage(),
+    )
+
+    updated = await node(state)
+
+    assert updated.workflow_outcome == "blocked"
+    assert updated.additional_metadata["planner_error"]["error_type"] == "MissingShieldResult"
+    assert len(operation.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_planner_node_missing_triage_blocked():
+    operation = FakePlannerOperation(
+        PlannerOutcome(
+            agent_state=_simple_plan(),
+            execution=None,
+            fallback_used=False,
+            error_type=None,
+            error_message=None,
+        )
+    )
+    node = make_planner_node(operation, model_name="gpt-planner-test")
+    state = GraphState(
+        request_id="req-planner-002",
+        initial_ticket=_ticket(),
+        shield_result=_shield(),
+    )
+
+    updated = await node(state)
+
+    assert updated.workflow_outcome == "blocked"
+    assert updated.additional_metadata["planner_error"]["error_type"] == "MissingTriageResult"
+    assert len(operation.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_planner_node_normal_outcome_running():
+    plan = _simple_plan()
+    operation = FakePlannerOperation(
+        PlannerOutcome(
+            agent_state=plan,
+            execution=LLMExecutionMetadata(latency_ms=55.0, attempts=1),
+            fallback_used=False,
+            error_type=None,
+            error_message=None,
+        )
+    )
+    node = make_planner_node(operation, model_name="gpt-planner-test")
+    state = GraphState(
+        request_id="req-planner-003",
+        initial_ticket=_ticket(),
+        shield_result=_shield(),
+        triage_result=_triage(),
+    )
+
+    updated = await node(state)
+
+    assert updated.agent_state == plan
+    assert updated.workflow_outcome == "running"
+    meta = updated.additional_metadata["planner"]
+    assert meta["model_name"] == "gpt-planner-test"
+    assert meta["latency_ms"] == 55.0
+    assert meta["attempts"] == 1
+    assert meta["plan_length"] == 1
+    assert meta["current_step_id"] == "step_draft_info_response"
+    assert meta["step_titles"] == ["Draft informational response"]
+    assert len(operation.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_planner_node_can_carry_retrieval_capable_plan_shape():
+    plan = SupportAgentState(
+        plan=[
+            PlanStep(
+                step_id="step_retrieve_refund_policy",
+                title="Retrieve refund policy",
+                description="Retrieve refund policy.",
+                owner="retrieval_agent",
+                status="pending",
+            ),
+            PlanStep(
+                step_id="step_draft_refund_response",
+                title="Draft refund response",
+                description="Draft refund response.",
+                owner="response_agent",
+                status="pending",
+            ),
+            PlanStep(
+                step_id="step_human_review",
+                title="Human review",
+                description="Review refund case.",
+                owner="human",
+                status="pending",
+                requires_human_approval=True,
+            ),
+        ],
+        current_step_id="step_retrieve_refund_policy",
+    )
+    operation = FakePlannerOperation(
+        PlannerOutcome(
+            agent_state=plan,
+            execution=LLMExecutionMetadata(latency_ms=10.0, attempts=1),
+            fallback_used=False,
+            error_type=None,
+            error_message=None,
+        )
+    )
+    node = make_planner_node(operation, model_name="gpt-planner-test")
+    state = GraphState(
+        request_id="req-planner-004",
+        initial_ticket=_ticket(),
+        shield_result=_shield(),
+        triage_result=_triage(),
+    )
+
+    updated = await node(state)
+
+    assert updated.workflow_outcome == "running"
+    owners = [step.owner for step in updated.agent_state.plan]  # type: ignore[union-attr]
     assert "retrieval_agent" in owners
 
-    human_steps = [
-        step for step in updated_state.agent_state.plan
-        if step.owner == "human" and step.requires_human_approval
-    ]
-    assert len(human_steps) == 1
-    assert human_steps[0].step_id == "step_human_review"
+
+@pytest.mark.asyncio
+async def test_planner_node_fallback_outcome_needs_human_review():
+    operation = FakePlannerOperation(
+        PlannerOutcome(
+            agent_state=_fallback_plan(),
+            execution=None,
+            fallback_used=True,
+            error_type="UpstreamServiceError",
+            error_message="Simulated planner failure",
+        )
+    )
+    node = make_planner_node(operation, model_name="gpt-planner-test")
+    state = GraphState(
+        request_id="req-planner-005",
+        initial_ticket=_ticket(),
+        shield_result=_shield(),
+        triage_result=_triage(),
+    )
+
+    updated = await node(state)
+
+    assert updated.workflow_outcome == "needs_human_review"
+    assert updated.agent_state is not None
+    assert len(updated.agent_state.plan) == 2
+    owners = [step.owner for step in updated.agent_state.plan]
+    assert "retrieval_agent" not in owners
+    err = updated.additional_metadata["planner_error"]
+    assert err["fallback_plan_used"] is True
+    assert err["error_type"] == "UpstreamServiceError"
+    assert err["message"] == "Simulated planner failure"
+    assert "latency_ms" in err
 
 
 @pytest.mark.asyncio
-async def test_planner_node_uses_fallback_plan_on_model_failure(monkeypatch):
-    """
-    Planner failure fallback must not invent an unfulfillable retrieval dependency.
-    """
-
-    async def fake_generate_structured(self, *, system_prompt, prompt, response_schema):
-        raise Exception("Simulated planner failure")
-
-    monkeypatch.setattr(
-        "app.nodes.planner.AsyncOpenAIWrapper.generate_structured",
-        fake_generate_structured,
-    )
-
-    state = GraphState(
-        request_id="req-test-003",
-        initial_ticket=SupportTicket(
-            customer_message="My account may have been accessed by someone else.",
-            customer_metadata={},
-            order_account_metadata={"account_id": "ACC-777"},
-        ),
-        shield_result=ShieldOutput(
-            decision="allow_with_flag",
-            risk_level="high",
-            categories=["valid_support_request", "suspicious_input"],
-            sanitized_message="My account may have been accessed by someone else.",
-            should_route_to_human=True,
-            clarification_question=None,
-            reasoning="Potentially sensitive support request.",
-        ),
-        triage_result=TriageOutput(
-            issue_category="account_security",
-            intent="problem_report",
-            urgency="high",
-            customer_tone="frustrated",
-            requires_escalation=True,
-            requires_human_approval=True,
-            reasoning_summary="Potential account security incident requiring human review.",
-        ),
-    )
-
-    updated_state = await planner_node(state)
-
-    assert updated_state.agent_state is not None
-    assert updated_state.workflow_outcome == "needs_human_review"
-    assert len(updated_state.agent_state.plan) == 2
-
-    step_ids = [step.step_id for step in updated_state.agent_state.plan]
-    assert "step_draft_response" in step_ids
-    assert "step_human_review" in step_ids
-    assert "step_retrieve_context" not in step_ids
-
-    owners = [step.owner for step in updated_state.agent_state.plan]
-    assert "retrieval_agent" not in owners
-
-    human_steps = [step for step in updated_state.agent_state.plan if step.owner == "human"]
-    assert len(human_steps) == 1
-
-    assert "planner_error" in updated_state.additional_metadata
-    assert updated_state.additional_metadata["planner_error"]["fallback_plan_used"] is True
+async def test_planner_node_has_no_local_normalization_or_fallback():
+    source = inspect.getsource(planner_module)
+    assert "_normalize_planner_output" not in source
+    assert "_build_fallback_plan" not in source
+    assert "AsyncOpenAIWrapper" not in source
