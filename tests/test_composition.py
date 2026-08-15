@@ -15,6 +15,7 @@ from app.prompts.local_repository import LocalPromptRepository
 from app.prompts.planner_prompts import PLANNER_PROMPT_V1
 from app.prompts.response_drafting_prompts import RESPONSE_DRAFTING_PROMPT_V1
 from app.prompts.triage_prompts import TRIAGE_PROMPT_V1
+from app.telemetry import StdlibTelemetry
 
 
 class FakeWrapper:
@@ -114,6 +115,15 @@ def test_build_runtime_graph_wires_four_configured_adapters(monkeypatch):
         captured["response_drafting_operation"]._prompt_ref
         == RESPONSE_DRAFTING_PROMPT_V1.ref
     )
+
+    telemetries = [
+        captured["input_shield_operation"]._telemetry,
+        captured["triage_operation"]._telemetry,
+        captured["planner_operation"]._telemetry,
+        captured["response_drafting_operation"]._telemetry,
+    ]
+    assert all(isinstance(item, StdlibTelemetry) for item in telemetries)
+    assert telemetries[0] is telemetries[1] is telemetries[2] is telemetries[3]
 
 
 def test_build_runtime_graph_planner_fallback_to_input_shield(monkeypatch):

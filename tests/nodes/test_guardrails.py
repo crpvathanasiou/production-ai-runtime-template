@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from app.graph_state import GraphState
@@ -8,6 +10,7 @@ from app.schemas import (
     SupportTicket,
     TriageOutput,
 )
+from tests.test_logging import assert_visible_correlation
 
 
 DOC_A = RetrievedDocument(
@@ -25,6 +28,7 @@ DOC_B = RetrievedDocument(
 async def test_guardrails_node_passes_grounded_response():
     state = GraphState(
         request_id="req-guardrails-001",
+        run_id="run-guardrails-001",
         initial_ticket=SupportTicket(
             customer_message="How long does shipping take?",
             customer_metadata={},
@@ -61,6 +65,7 @@ async def test_guardrails_node_passes_when_no_retrieval_evidence():
     """Empty related_documents is valid when no retrieval evidence exists."""
     state = GraphState(
         request_id="req-guardrails-no-retrieval",
+        run_id="run-guardrails-no-retrieval",
         initial_ticket=SupportTicket(
             customer_message="Can you tell me how long shipping usually takes?",
             customer_metadata={},
@@ -97,6 +102,7 @@ async def test_guardrails_node_passes_when_no_retrieval_evidence():
 async def test_guardrails_node_fails_when_retrieved_evidence_exists_but_draft_cites_nothing():
     state = GraphState(
         request_id="req-guardrails-missing-grounding",
+        run_id="run-guardrails-missing-grounding",
         initial_ticket=SupportTicket(
             customer_message="Can I get a refund?",
             customer_metadata={},
@@ -136,6 +142,7 @@ async def test_guardrails_node_fails_when_retrieved_evidence_exists_but_draft_ci
 async def test_guardrails_node_fails_on_fabricated_citation():
     state = GraphState(
         request_id="req-guardrails-fabricated",
+        run_id="run-guardrails-fabricated",
         initial_ticket=SupportTicket(
             customer_message="How long does shipping take?",
             customer_metadata={},
@@ -170,6 +177,7 @@ async def test_guardrails_node_fails_on_fabricated_citation():
 async def test_guardrails_node_fails_on_mismatched_citation():
     state = GraphState(
         request_id="req-guardrails-mismatch",
+        run_id="run-guardrails-mismatch",
         initial_ticket=SupportTicket(
             customer_message="How long does shipping take?",
             customer_metadata={},
@@ -208,6 +216,7 @@ async def test_guardrails_node_fails_on_risky_refund_wording():
     )
     state = GraphState(
         request_id="req-guardrails-003",
+        run_id="run-guardrails-003",
         initial_ticket=SupportTicket(
             customer_message="I was charged twice and want a refund.",
             customer_metadata={},
@@ -238,3 +247,50 @@ async def test_guardrails_node_fails_on_risky_refund_wording():
     assert updated_state.workflow_outcome == "needs_human_review"
     assert "guardrails" in updated_state.additional_metadata
     assert updated_state.additional_metadata["guardrails"]["issues_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_guardrails_operational_logs_visible_correlation(caplog):
+    secret_response = "SECRET_MODEL_OUTPUT_SENTINEL"
+    state = GraphState(
+        request_id="req-guardrails-log-001",
+        run_id="run-guardrails-log-001",
+        thread_id="thread-guardrails-log-001",
+        initial_ticket=SupportTicket(
+            customer_message="How long does shipping take?",
+            customer_metadata={},
+            order_account_metadata={},
+        ),
+        triage_result=TriageOutput(
+            issue_category="other",
+            intent="information_request",
+            urgency="low",
+            customer_tone="calm",
+            requires_escalation=False,
+            requires_human_approval=False,
+            reasoning_summary="Customer asks for shipping information.",
+        ),
+        retrieved_documents=[DOC_A],
+        response_draft=ResponseDrafting(
+            ticket_response=secret_response,
+            related_documents=[DOC_A],
+            unsupported_promises=False,
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.nodes.guardrails"):
+        updated = await guardrails_node(state)
+
+    assert updated.is_safe is False or updated.is_safe is True
+    messages = [record.getMessage() for record in caplog.records]
+    completed = [m for m in messages if "guardrails.completed" in m]
+    assert completed
+    assert_visible_correlation(
+        completed[0],
+        request_id="req-guardrails-log-001",
+        run_id="run-guardrails-log-001",
+        node_name="guardrails",
+        event="guardrails.completed",
+        thread_id="thread-guardrails-log-001",
+    )
+    assert secret_response not in "\n".join(messages)

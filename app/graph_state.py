@@ -14,7 +14,20 @@ from app.schemas import (
 class GraphState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    request_id: str = Field(..., description="Request correlation id for logs, traces, and graph execution.")
+    request_id: str = Field(
+        ...,
+        description="Request correlation id for logs, traces, and graph execution.",
+    )
+
+    run_id: str = Field(
+        ...,
+        description="Top-level application execution id for one graph invocation.",
+    )
+
+    thread_id: str | None = Field(
+        default=None,
+        description="Optional continuity id across multiple runs.",
+    )
 
     initial_ticket: SupportTicket = Field(
         ...,

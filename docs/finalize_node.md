@@ -67,11 +67,14 @@
 
 # `app/nodes/finalize.py`
 
+Current M3 operational logging uses stdlib `format_operational_log` with visible
+`request_id` / `run_id` / optional `thread_id`. There is no node `@traceable` /
+direct LangSmith ownership. Illustrative finalize consolidator logic:
+
 ```python
 import time
-from langsmith import traceable
 
-from app.core.logging import bind_log_context, get_logger
+from app.core.logging import format_operational_log, get_logger
 from app.graph_state import GraphState
 
 logger = get_logger(__name__)
@@ -115,15 +118,18 @@ def _resolve_final_workflow_outcome(state: GraphState) -> str:
     return "blocked"
 
 
-@traceable(run_type="chain", name="finalize_node")
 async def finalize_node(state: GraphState) -> GraphState:
     started = time.perf_counter()
     request_id = state.request_id
+    run_id = state.run_id
+    thread_id = state.thread_id
 
     logger.info(
-        "finalize.started",
-        extra=bind_log_context(
+        format_operational_log(
+            "finalize.started",
             request_id=request_id,
+            run_id=run_id,
+            thread_id=thread_id,
             node_name="finalize",
         ),
     )
@@ -144,9 +150,11 @@ async def finalize_node(state: GraphState) -> GraphState:
     }
 
     logger.info(
-        "finalize.completed",
-        extra=bind_log_context(
+        format_operational_log(
+            "finalize.completed",
             request_id=request_id,
+            run_id=run_id,
+            thread_id=thread_id,
             node_name="finalize",
             latency_ms=latency_ms,
             final_workflow_outcome=final_outcome,
@@ -226,6 +234,7 @@ from app.schemas import ResponseDrafting, RetrievedDocument, SupportTicket
 async def test_finalize_node_marks_completed_for_safe_response():
     state = GraphState(
         request_id="req-finalize-001",
+        run_id="run-finalize-001",
         initial_ticket=SupportTicket(
             customer_message="How long does shipping take?",
             customer_metadata={},
@@ -256,6 +265,7 @@ async def test_finalize_node_marks_completed_for_safe_response():
 async def test_finalize_node_keeps_needs_human_review_when_pending():
     state = GraphState(
         request_id="req-finalize-002",
+        run_id="run-finalize-002",
         initial_ticket=SupportTicket(
             customer_message="I want a refund.",
             customer_metadata={},
@@ -277,6 +287,7 @@ async def test_finalize_node_keeps_needs_human_review_when_pending():
 async def test_finalize_node_marks_blocked_when_human_rejects():
     state = GraphState(
         request_id="req-finalize-003",
+        run_id="run-finalize-003",
         initial_ticket=SupportTicket(
             customer_message="My account was hacked.",
             customer_metadata={},

@@ -1,11 +1,10 @@
 import time
 from typing import Protocol
 
-from langsmith import traceable
-
+from app.application.execution import ExecutionContext
 from app.application.triage import TriageOutcome
 from app.core.exceptions import ModelOutputParsingError, UpstreamServiceError
-from app.core.logging import bind_log_context, get_logger
+from app.core.logging import format_operational_log, get_logger
 from app.graph_state import GraphState
 from app.schemas import ShieldOutput, SupportTicket
 
@@ -16,6 +15,7 @@ class SupportsTriageExecute(Protocol):
     async def execute(
         self,
         *,
+        context: ExecutionContext,
         ticket: SupportTicket,
         shield_result: ShieldOutput,
     ) -> TriageOutcome: ...
@@ -26,18 +26,23 @@ def make_triage_node(
     *,
     model_name: str,
 ):
-    @traceable(
-        run_type="chain",
-        name="triage_node",
-    )
     async def triage_node(state: GraphState) -> GraphState:
         started = time.perf_counter()
         request_id = state.request_id
+        run_id = state.run_id
+        thread_id = state.thread_id
+        context = ExecutionContext(
+            request_id=state.request_id,
+            run_id=state.run_id,
+            thread_id=state.thread_id,
+        )
 
         logger.info(
-            "triage.started",
-            extra=bind_log_context(
+            format_operational_log(
+                "triage.started",
                 request_id=request_id,
+                run_id=run_id,
+                thread_id=thread_id,
                 node_name="triage",
             ),
         )
@@ -62,6 +67,7 @@ def make_triage_node(
 
         try:
             outcome = await operation.execute(
+                context=context,
                 ticket=state.initial_ticket,
                 shield_result=state.shield_result,
             )
@@ -90,9 +96,11 @@ def make_triage_node(
             }
 
             logger.info(
-                "triage.completed",
-                extra=bind_log_context(
+                format_operational_log(
+                    "triage.completed",
                     request_id=request_id,
+                    run_id=run_id,
+                    thread_id=thread_id,
                     node_name="triage",
                     model_name=model_name,
                     latency_ms=outcome.execution.latency_ms,
@@ -116,10 +124,12 @@ def make_triage_node(
                 "latency_ms": latency_ms,
             }
 
-            logger.exception(
-                "triage.recovered_error",
-                extra=bind_log_context(
+            logger.error(
+                format_operational_log(
+                    "triage.recovered_error",
                     request_id=request_id,
+                    run_id=run_id,
+                    thread_id=thread_id,
                     node_name="triage",
                     error_type=exc.__class__.__name__,
                     latency_ms=latency_ms,

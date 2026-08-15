@@ -6,7 +6,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Generic, List, Optional, Protocol, Sequence, Type
 
-from langsmith import traceable
 from openai import APIError, APITimeoutError, AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionMessageParam,
@@ -15,13 +14,17 @@ from openai.types.chat import (
 )
 from pydantic import BaseModel
 
+from app.application.execution import ExecutionContext, LLMInvocationId
 from app.application.ports.llm import LLMExecutionMetadata, StructuredLLMResult, T
 from app.core.exceptions import (
     GuardrailBlockedError,
     ModelOutputParsingError,
     UpstreamServiceError,
 )
+from app.core.logging import format_operational_log, get_logger
 from app.core.settings import get_settings
+
+logger = get_logger(__name__)
 
 # -----------------------------------------------------------------------------
 # Protocols
@@ -231,8 +234,6 @@ class AsyncOpenAIWrapper:
     # -------------------------------------------------------------------------
     # Χρήση όταν θες ελεύθερο text output.
     # Δεν κάνει parsing σε schema, μόνο raw text extraction.
-    # Decorated με LangSmith traceable για observability.
-    @traceable(run_type="llm", name="openai_generate_text")
     async def generate_text(
         self,
         *,
@@ -339,11 +340,13 @@ class AsyncOpenAIWrapper:
     # - manual json.loads()
     # - manual schema parsing σαν primary mechanism
     #
-    # Public method stays undecorated so TypeVar inference / LLMPort assignability
-    # are preserved; LangSmith tracing keeps the same run name on the impl below.
+    # Public method stays thin so TypeVar inference / LLMPort assignability
+    # are preserved; provider attempt work lives on the private impl below.
     async def generate_structured(
         self,
         *,
+        context: ExecutionContext,
+        invocation_id: LLMInvocationId,
         prompt: str,
         response_schema: Type[T],
         model_name: Optional[str] = None,
@@ -359,7 +362,9 @@ class AsyncOpenAIWrapper:
         - manual json.loads()
         - manual schema enforcement as the primary mechanism
         """
-        return await self._generate_structured_traced(
+        return await self._generate_structured_impl(
+            context=context,
+            invocation_id=invocation_id,
             prompt=prompt,
             response_schema=response_schema,
             model_name=model_name,
@@ -368,10 +373,11 @@ class AsyncOpenAIWrapper:
             system_prompt=system_prompt,
         )
 
-    @traceable(run_type="llm", name="openai_generate_structured")
-    async def _generate_structured_traced(
+    async def _generate_structured_impl(
         self,
         *,
+        context: ExecutionContext,
+        invocation_id: LLMInvocationId,
         prompt: str,
         response_schema: Type[T],
         model_name: Optional[str] = None,
@@ -382,6 +388,7 @@ class AsyncOpenAIWrapper:
         model = model_name or self.default_model
         temp = self.default_temperature if temperature is None else temperature
         guardrails = list(enforced_guardrails or [])
+        max_attempts = self.max_retries + 1
 
         # Αυτό είναι ένα "λογικό prompt" για purposes guardrails/logging.
         # Δηλαδή συνδυάζουμε system + user prompt σε ένα ενιαίο string
@@ -407,6 +414,14 @@ class AsyncOpenAIWrapper:
         )
 
         for attempt in range(1, self.max_retries + 2):
+            self._log_provider_event(
+                "llm_provider.attempt_started",
+                context=context,
+                invocation_id=invocation_id,
+                model_name=model,
+                attempt=attempt,
+                max_attempts=max_attempts,
+            )
             try:
                 # SDK-native structured parsing.
                 # Το SDK επιστρέφει parsed object με βάση το response_schema.
@@ -418,6 +433,17 @@ class AsyncOpenAIWrapper:
                         response_format=response_schema,
                     ),
                     timeout=self.timeout_seconds,
+                )
+
+                # Provider/SDK request succeeded. Later parsing/application
+                # failures must not be labeled as llm_provider.failed.
+                self._log_provider_event(
+                    "llm_provider.attempt_succeeded",
+                    context=context,
+                    invocation_id=invocation_id,
+                    model_name=model,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
                 )
 
                 message = completion.choices[0].message
@@ -460,11 +486,37 @@ class AsyncOpenAIWrapper:
             # Upstream/transport failures => retryable
             except (asyncio.TimeoutError, APITimeoutError, APIError) as exc:
                 last_error = exc
+                failure_category = self._provider_failure_category(exc)
+                error_type = type(exc).__name__
                 if attempt > self.max_retries:
+                    self._log_provider_event(
+                        "llm_provider.failed",
+                        context=context,
+                        invocation_id=invocation_id,
+                        model_name=model,
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        provider_failure_category=failure_category,
+                        error_type=error_type,
+                    )
                     raise UpstreamServiceError(
                         f"OpenAI structured request failed after {attempt} attempt(s): {exc}"
                     ) from exc
-                await asyncio.sleep(0.5 * attempt)
+
+                retry_delay_seconds = 0.5 * attempt
+                self._log_provider_event(
+                    "llm_provider.retry_scheduled",
+                    context=context,
+                    invocation_id=invocation_id,
+                    model_name=model,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    next_attempt=attempt + 1,
+                    retry_delay_seconds=retry_delay_seconds,
+                    provider_failure_category=failure_category,
+                    error_type=error_type,
+                )
+                await asyncio.sleep(retry_delay_seconds)
 
             # Οτιδήποτε άλλο εδώ θεωρείται parsing/schema/logic failure.
             # Το κρατάμε ξεχωριστό από transport failures.
@@ -477,6 +529,42 @@ class AsyncOpenAIWrapper:
                 ) from exc
 
         raise UpstreamServiceError(f"OpenAI structured request failed: {last_error}")
+
+    @staticmethod
+    def _provider_failure_category(exc: Exception) -> str:
+        if isinstance(exc, APITimeoutError):
+            return "timeout"
+        if isinstance(exc, asyncio.TimeoutError):
+            return "timeout"
+        if isinstance(exc, APIError):
+            return "api_error"
+        raise TypeError(f"Unsupported provider failure type: {type(exc).__name__}")
+
+    @staticmethod
+    def _log_provider_event(
+        event: str,
+        *,
+        context: ExecutionContext,
+        invocation_id: LLMInvocationId,
+        model_name: str,
+        attempt: int,
+        max_attempts: int,
+        **fields: Any,
+    ) -> None:
+        logger.info(
+            format_operational_log(
+                event,
+                request_id=context.request_id,
+                run_id=context.run_id,
+                thread_id=context.thread_id,
+                invocation_id=invocation_id.value,
+                provider="openai",
+                model_name=model_name,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                **fields,
+            ),
+        )
 
     # -------------------------------------------------------------------------
     # Guardrail execution

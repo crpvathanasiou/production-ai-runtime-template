@@ -35,8 +35,6 @@ class Settings(BaseSettings):
     input_shield_temperature: float = Field(default=0.0, alias="INPUT_SHIELD_TEMPERATURE")
     input_shield_max_prompt_chars: int = Field(default=12000, alias="INPUT_SHIELD_MAX_PROMPT_CHARS")
 
-    langsmith_enabled: bool = Field(default=False, alias="LANGSMITH_ENABLED")
-
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     # Optional: only used when provided (Compose will provide it later)

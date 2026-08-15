@@ -1,8 +1,9 @@
 import time
 from typing import Literal, Protocol
 
+from app.application.execution import ExecutionContext
 from app.application.input_shield import InputShieldOutcome
-from app.core.logging import bind_log_context, get_logger
+from app.core.logging import format_operational_log, get_logger
 from app.graph_state import GraphState
 from app.schemas import ShieldOutput, SupportTicket
 
@@ -12,7 +13,12 @@ WorkflowOutcome = Literal["running", "blocked", "needs_human_review", "completed
 
 
 class SupportsInputShieldExecute(Protocol):
-    async def execute(self, ticket: SupportTicket) -> InputShieldOutcome: ...
+    async def execute(
+        self,
+        *,
+        context: ExecutionContext,
+        ticket: SupportTicket,
+    ) -> InputShieldOutcome: ...
 
 
 def _workflow_outcome_from_shield(output: ShieldOutput) -> WorkflowOutcome:
@@ -33,16 +39,28 @@ def make_input_shield_node(
     async def input_shield_node(state: GraphState) -> GraphState:
         started = time.perf_counter()
         request_id = state.request_id
+        run_id = state.run_id
+        thread_id = state.thread_id
+        context = ExecutionContext(
+            request_id=state.request_id,
+            run_id=state.run_id,
+            thread_id=state.thread_id,
+        )
 
         logger.info(
-            "input_shield.started",
-            extra=bind_log_context(
+            format_operational_log(
+                "input_shield.started",
                 request_id=request_id,
+                run_id=run_id,
+                thread_id=thread_id,
                 node_name="input_shield",
             ),
         )
 
-        outcome = await operation.execute(state.initial_ticket)
+        outcome = await operation.execute(
+            context=context,
+            ticket=state.initial_ticket,
+        )
         state.shield_result = outcome.output
 
         if outcome.source == "heuristic_fail_fast":
@@ -58,9 +76,11 @@ def make_input_shield_node(
             }
 
             logger.info(
-                "input_shield.completed_fail_fast",
-                extra=bind_log_context(
+                format_operational_log(
+                    "input_shield.completed_fail_fast",
                     request_id=request_id,
+                    run_id=run_id,
+                    thread_id=thread_id,
                     node_name="input_shield",
                     decision=outcome.output.decision,
                     risk_level=outcome.output.risk_level,
@@ -86,9 +106,11 @@ def make_input_shield_node(
             state.additional_metadata["input_shield_error"] = error_meta
 
             logger.warning(
-                "input_shield.guardrail_blocked",
-                extra=bind_log_context(
+                format_operational_log(
+                    "input_shield.guardrail_blocked",
                     request_id=request_id,
+                    run_id=run_id,
+                    thread_id=thread_id,
                     node_name="input_shield",
                     error_type=outcome.error_type or "GuardrailBlockedError",
                     latency_ms=latency_ms,
@@ -115,9 +137,11 @@ def make_input_shield_node(
             state.additional_metadata["input_shield_error"] = fallback_meta
 
             logger.error(
-                "input_shield.recovered_error",
-                extra=bind_log_context(
+                format_operational_log(
+                    "input_shield.recovered_error",
                     request_id=request_id,
+                    run_id=run_id,
+                    thread_id=thread_id,
                     node_name="input_shield",
                     error_type=outcome.error_type or "UpstreamServiceError",
                     latency_ms=latency_ms,
@@ -147,9 +171,11 @@ def make_input_shield_node(
         state.additional_metadata["input_shield"] = success_meta
 
         logger.info(
-            "input_shield.completed",
-            extra=bind_log_context(
+            format_operational_log(
+                "input_shield.completed",
                 request_id=request_id,
+                run_id=run_id,
+                thread_id=thread_id,
                 node_name="input_shield",
                 model_name=model_name,
                 latency_ms=latency_ms,

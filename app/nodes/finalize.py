@@ -1,8 +1,7 @@
-from typing import Literal
 import time
-from langsmith import traceable
+from typing import Literal
 
-from app.core.logging import bind_log_context, get_logger
+from app.core.logging import format_operational_log, get_logger
 from app.graph_state import GraphState
 
 logger = get_logger(__name__)
@@ -70,7 +69,6 @@ def _resolve_final_workflow_outcome(state: GraphState) -> WorkflowOutcome:
     return "blocked"
 
 
-@traceable(run_type="chain", name="finalize_node")
 async def finalize_node(state: GraphState) -> GraphState:
     """
     Final graph node.
@@ -85,11 +83,15 @@ async def finalize_node(state: GraphState) -> GraphState:
     """
     started = time.perf_counter()
     request_id = state.request_id
+    run_id = state.run_id
+    thread_id = state.thread_id
 
     logger.info(
-        "finalize.started",
-        extra=bind_log_context(
+        format_operational_log(
+            "finalize.started",
             request_id=request_id,
+            run_id=run_id,
+            thread_id=thread_id,
             node_name="finalize",
         ),
     )
@@ -113,9 +115,11 @@ async def finalize_node(state: GraphState) -> GraphState:
     }
 
     logger.info(
-        "finalize.completed",
-        extra=bind_log_context(
+        format_operational_log(
+            "finalize.completed",
             request_id=request_id,
+            run_id=run_id,
+            thread_id=thread_id,
             node_name="finalize",
             latency_ms=latency_ms,
             final_workflow_outcome=final_outcome,

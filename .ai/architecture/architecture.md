@@ -6,7 +6,7 @@ This document is the approved **target** architecture for the reusable template.
 
 **Approved target architecture** is the model below. Future work must move toward it.
 
-**Currently implemented in the seeded repository (after M2):**
+**Currently implemented in the seeded repository (after M3):**
 
 - FastAPI app with `/health` and `/version`
 - optional Redis ping in the health check
@@ -20,11 +20,14 @@ This document is the approved **target** architecture for the reusable template.
 - application-owned prompt lifecycle: `PromptRef`, `PromptIdentity`, `ResolvedPrompt`, `PromptRepository`
 - concrete baseline `LocalPromptRepository` over four immutable code-backed V1 definitions (`input-shield@1`, `triage@1`, `planner@1`, `response-drafting@1`)
 - Application Operations resolve explicit revisions; nodes copy safe prompt identity into orchestration metadata when an outcome exists
-- `LLMPort` remains prompt-lifecycle neutral (receives only rendered `system_prompt` / `prompt` / `response_schema`)
-- a seeded retrieval entrypoint / workflow seam (no repository-level knowledge corpus; no active retrieval backend; current placement in `execute_plan`)
-- LangSmith `@traceable` on selected calls and nodes
+- application-owned `ExecutionContext` (`request_id`, `run_id`, optional `thread_id`) and `LLMInvocationId`
+- thin Application `TelemetryPort` with `NoOpTelemetry` / `StdlibTelemetry` and typed operation execution events
+- `LLMPort.generate_structured(...)` receives `ExecutionContext` + `LLMInvocationId` + rendered prompts + schema; it does **not** receive `PromptIdentity`, `TelemetryPort`, `operation_name`, or GraphState
+- graph nodes emit stdlib operational logs with visible `request_id` / `run_id` / optional `thread_id` correlation
+- structured OpenAI adapter emits provider operational logs correlating attempts/retries under one `invocation_id`
+- explicit project-owned LangSmith `@traceable` integration removed from nodes and wrapper; no direct `langsmith` project dependency (transitive presence via LangGraph/langchain-core may remain)
 
-**Not yet implemented (later readiness / deferred):** `ExecutionContext`, `TelemetryPort` / application telemetry boundary, complete failed-attempt identity telemetry across provider exceptions that return no operation outcome, controlled tool runtime, RAG backend, durable HITL, CI readiness closure, multiple providers, remote prompt-management platform. Do not document those as already implemented. M2 does **not** make the entire Template Readiness baseline complete.
+**Not yet implemented (later readiness / deferred):** controlled tool runtime, RAG backend, durable HITL / checkpointing, CI readiness closure, multiple providers, remote prompt-management platform, OpenTelemetry / metrics backends. Do not document those as already implemented. M3 does **not** make the entire Template Readiness baseline complete.
 
 GraphState remains outside Application Core. Prompt identity and resolution for the four live LLM paths are application-owned.
 
@@ -130,9 +133,7 @@ Reusable business behaviour belongs in application services / use cases as a **p
 
 ### `ExecutionContext`
 
-The application owns a correlation/execution context. This concept is **not** implemented in the seeded Python runtime.
-
-Baseline identity (conceptual minimum):
+The application owns a correlation/execution context. After M3 this is implemented as `ExecutionContext` in Application Core:
 
 ```text
 request_id
@@ -140,7 +141,9 @@ run_id
 optional thread_id
 ```
 
-Additional fields are **requirement-driven**, not baseline-required:
+`thread_id` is optional continuity across runs. It does **not** imply LangGraph checkpointing or durable HITL persistence. One top-level graph execution has one `run_id`.
+
+Additional fields remain **requirement-driven**, not baseline-required:
 
 ```text
 user identity
@@ -150,11 +153,11 @@ policy context
 extra correlation metadata
 ```
 
-Graph-specific state may carry a copy of identifiers; it is not the owner of execution semantics. Do not design a custom tracing framework around this.
+`GraphState` carries request/run/thread copies for orchestration; it is not the owner of execution semantics. Separately, Application Operations create a transient `LLMInvocationId` for each `LLMPort` call; all provider retries for that call share the same `invocation_id`. `invocation_id` is not stored in `GraphState` or `additional_metadata`. Do not design a custom tracing framework around this.
 
 ### Provider-neutral `LLMPort`
 
-The application calls language models through a provider-neutral **port**. After M1, `LLMPort` exists and `AsyncOpenAIWrapper` is the concrete OpenAI outbound adapter behind that boundary for the four live Application Operations. Multiple providers are not implemented. Do not imply that they are.
+The application calls language models through a provider-neutral **port**. After M1, `LLMPort` exists and `AsyncOpenAIWrapper` is the concrete OpenAI outbound adapter behind that boundary for the four live Application Operations. After M3, `generate_structured(...)` also receives `ExecutionContext` and `LLMInvocationId` for correlation. It does **not** receive `PromptIdentity`, `TelemetryPort`, `operation_name`, GraphState, or vendor tracing objects. Multiple providers are not implemented. Do not imply that they are.
 
 ### Prompt identity and `PromptRepository`
 
@@ -168,13 +171,18 @@ content_hash
 
 A portable `PromptRepository` is the application-owned store/lookup **port** for prompt content. A prompt-management product may later be an outbound adapter behind that port; it is not the architectural owner of prompt identity.
 
-Current seed (after M2): `PromptRef` / `PromptIdentity` / `ResolvedPrompt` / `PromptRepository` exist under `app/application/prompts/`. `LocalPromptRepository` resolves four immutable code-backed V1 definitions. `content_hash` identifies the stored static system+user templates, not runtime customer values. Application Operations resolve explicit revisions; `LLMPort` and the OpenAI adapter remain prompt-lifecycle agnostic. Nodes expose safe identity metadata on successful/handled outcomes. Full failed-attempt correlation when a provider call raises without returning an operation outcome belongs to later `ExecutionContext` / telemetry work.
+Current seed (after M3): `PromptRef` / `PromptIdentity` / `ResolvedPrompt` / `PromptRepository` exist under `app/application/prompts/`. `LocalPromptRepository` resolves four immutable code-backed V1 definitions. `content_hash` identifies the stored static system+user templates, not runtime customer values. Application Operations resolve explicit revisions; `PromptIdentity` stays outside `LLMPort`. Nodes expose safe identity metadata on successful/handled outcomes. Application telemetry emits `LLMInvocationStarted` (with `PromptIdentity`) before the provider call, so failed attempts remain correlatable at the Application layer even when no operation outcome is returned to the node.
 
 ### Application-owned telemetry boundary
 
-The application owns `ExecutionContext` and a **thin** telemetry boundary (what was invoked, latency, outcome, correlation ids). LangSmith and OpenTelemetry may later be outbound exporters behind that boundary. Do not design a custom tracing platform.
+The application owns `ExecutionContext` and a **thin** `TelemetryPort` (what was invoked, latency, outcome, correlation ids). After M3 the seeded baseline implements `TelemetryPort` with `NoOpTelemetry` / `StdlibTelemetry` and typed events (`OperationStarted`, `LLMInvocationStarted`, `OperationCompleted`, `OperationFallback`, `OperationFailed`). Composition injects one shared `StdlibTelemetry`; direct callers/tests may use `NoOpTelemetry`. This is not an event bus, span framework, OpenTelemetry, metrics platform, or LangSmith abstraction. OpenTelemetry or other exporters remain deferred outbound options behind the port. Do not design a custom tracing platform.
 
-Current seed: stdlib logging plus LangSmith `@traceable` mixed into wrapper and nodes.
+Distinct from Application telemetry:
+
+- graph/node **operational logging** (stdlib + minimal rendered correlation fields)
+- provider-adapter **operational logging** (attempt/retry/transport-failure correlation under one `invocation_id`)
+
+Explicit project-owned LangSmith `@traceable` ownership has been removed from nodes and the wrapper.
 
 ### `ToolRequest` / `ToolResult` and controlled execution
 

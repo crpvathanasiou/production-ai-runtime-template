@@ -7,6 +7,8 @@ from typing import Generic, Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from app.application.execution import ExecutionContext, LLMInvocationId
+
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -26,6 +28,8 @@ class LLMPort(Protocol):
     async def generate_structured(
         self,
         *,
+        context: ExecutionContext,
+        invocation_id: LLMInvocationId,
         system_prompt: str | None,
         prompt: str,
         response_schema: type[T],

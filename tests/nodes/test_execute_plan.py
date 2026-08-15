@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
+from app.application.execution import ExecutionContext
 from app.application.ports.llm import LLMExecutionMetadata
 from app.application.prompts import PromptIdentity, PromptRef
 from app.application.response_drafting import ResponseDraftingOutcome
@@ -17,6 +20,7 @@ from app.schemas import (
     SupportTicket,
     TriageOutput,
 )
+from tests.test_logging import assert_visible_correlation
 
 _PROMPT_IDENTITY = PromptIdentity(
     ref=PromptRef(prompt_id="response-drafting", revision=1),
@@ -38,12 +42,14 @@ class FakeResponseDraftingOperation:
     async def execute(
         self,
         *,
+        context: ExecutionContext,
         ticket: SupportTicket,
         triage_result: TriageOutput,
         retrieved_documents: list[RetrievedDocument],
     ) -> ResponseDraftingOutcome:
         self.calls.append(
             {
+                "context": context,
                 "ticket": ticket,
                 "triage_result": triage_result,
                 "retrieved_documents": retrieved_documents,
@@ -112,6 +118,7 @@ async def test_execute_plan_node_retrieval_step_populates_documents(monkeypatch)
 
     state = GraphState(
         request_id="req-execute-001",
+        run_id="run-execute-001",
         initial_ticket=SupportTicket(
             customer_message="How long does shipping take?",
             customer_metadata={},
@@ -166,6 +173,7 @@ async def test_execute_plan_node_explicit_retrieval_returning_empty_fails():
 
     state = GraphState(
         request_id="req-execute-empty-retrieval",
+        run_id="run-execute-empty-retrieval",
         initial_ticket=SupportTicket(
             customer_message="What is the refund policy?",
             customer_metadata={},
@@ -241,6 +249,7 @@ async def test_execute_plan_node_response_step_populates_response_draft():
 
     state = GraphState(
         request_id="req-execute-002",
+        run_id="run-execute-002",
         initial_ticket=SupportTicket(
             customer_message="How long does shipping take?",
             customer_metadata={},
@@ -292,6 +301,11 @@ async def test_execute_plan_node_response_step_populates_response_draft():
     assert "user_prompt" not in meta
     assert "execute_plan" in updated_state.additional_metadata
     assert len(operation.calls) == 1
+    assert operation.calls[0]["context"] == ExecutionContext(
+        request_id="req-execute-002",
+        run_id="run-execute-002",
+        thread_id=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -310,6 +324,7 @@ async def test_execute_plan_node_response_without_retrieved_context():
 
     state = GraphState(
         request_id="req-execute-no-retrieval-draft",
+        run_id="run-execute-no-retrieval-draft",
         initial_ticket=SupportTicket(
             customer_message="Can you tell me how long shipping usually takes?",
             customer_metadata={},
@@ -360,6 +375,7 @@ async def test_execute_plan_node_failed_response_step_routes_to_human_review():
 
     state = GraphState(
         request_id="req-execute-003",
+        run_id="run-execute-003",
         initial_ticket=SupportTicket(
             customer_message="I was charged twice and want a refund.",
             customer_metadata={},
@@ -448,6 +464,7 @@ async def test_execute_plan_node_pending_human_step_forces_needs_human_review():
 
     state = GraphState(
         request_id="req-execute-pending-human",
+        run_id="run-execute-pending-human",
         initial_ticket=SupportTicket(
             customer_message="How long does shipping take?",
             customer_metadata={},
@@ -504,6 +521,7 @@ async def test_execute_plan_node_missing_triage_fails_response_step():
 
     state = GraphState(
         request_id="req-execute-missing-triage",
+        run_id="run-execute-missing-triage",
         initial_ticket=SupportTicket(
             customer_message="Hello",
             customer_metadata={},
@@ -533,3 +551,73 @@ async def test_execute_plan_node_missing_triage_fails_response_step():
     )
     assert updated_state.workflow_outcome == "needs_human_review"
     assert len(operation.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_operational_logs_visible_correlation(caplog, monkeypatch):
+    secret_doc = "SECRET_DOCUMENT_CONTENT_SENTINEL"
+
+    def fake_retrieve_relevant_documents(*, query, max_documents=3):
+        return [
+            RetrievedDocument(
+                source="faq.md",
+                content=secret_doc,
+            )
+        ]
+
+    monkeypatch.setattr(
+        "app.nodes.execute_plan.retrieve_relevant_documents",
+        fake_retrieve_relevant_documents,
+    )
+
+    operation = FakeResponseDraftingOperation(
+        result=_draft_result(text="Thanks for asking."),
+    )
+    node = make_execute_plan_node(operation, model_name="gpt-draft-test")
+    state = GraphState(
+        request_id="req-execute-log-001",
+        run_id="run-execute-log-001",
+        thread_id="thread-execute-log-001",
+        initial_ticket=SupportTicket(
+            customer_message="How long does shipping take?",
+            customer_metadata={},
+            order_account_metadata={},
+        ),
+        triage_result=_triage(),
+        agent_state=SupportAgentState(
+            plan=[
+                PlanStep(
+                    step_id="step_retrieve",
+                    title="Retrieve docs",
+                    description="Retrieve.",
+                    owner="retrieval_agent",
+                    status="pending",
+                ),
+                PlanStep(
+                    step_id="step_draft",
+                    title="Draft",
+                    description="Draft.",
+                    owner="response_agent",
+                    status="pending",
+                ),
+            ],
+            current_step_id="step_retrieve",
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.nodes.execute_plan"):
+        updated = await node(state)
+
+    assert updated.workflow_outcome == "running"
+    messages = [record.getMessage() for record in caplog.records]
+    completed = [m for m in messages if "execute_plan.completed" in m]
+    assert completed
+    assert_visible_correlation(
+        completed[0],
+        request_id="req-execute-log-001",
+        run_id="run-execute-log-001",
+        node_name="execute_plan",
+        event="execute_plan.completed",
+        thread_id="thread-execute-log-001",
+    )
+    assert secret_doc not in "\n".join(messages)

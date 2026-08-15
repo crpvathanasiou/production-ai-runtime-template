@@ -128,11 +128,14 @@ def summarize_guardrail_issues(issues: list[str]) -> str:
 
 # 2. `app/nodes/guardrails.py`
 
+Current M3 operational logging uses stdlib `format_operational_log` with visible
+`request_id` / `run_id` / optional `thread_id`. There is no node `@traceable` /
+direct LangSmith ownership. Illustrative workflow logic:
+
 ```python
 import time
-from langsmith import traceable
 
-from app.core.logging import bind_log_context, get_logger
+from app.core.logging import format_operational_log, get_logger
 from app.graph_state import GraphState
 from app.guardrails.response_guardrails import (
     summarize_guardrail_issues,
@@ -142,15 +145,18 @@ from app.guardrails.response_guardrails import (
 logger = get_logger(__name__)
 
 
-@traceable(run_type="chain", name="guardrails_node")
 async def guardrails_node(state: GraphState) -> GraphState:
     started = time.perf_counter()
     request_id = state.request_id
+    run_id = state.run_id
+    thread_id = state.thread_id
 
     logger.info(
-        "guardrails.started",
-        extra=bind_log_context(
+        format_operational_log(
+            "guardrails.started",
             request_id=request_id,
+            run_id=run_id,
+            thread_id=thread_id,
             node_name="guardrails",
         ),
     )
@@ -177,9 +183,11 @@ async def guardrails_node(state: GraphState) -> GraphState:
     }
 
     logger.info(
-        "guardrails.completed",
-        extra=bind_log_context(
+        format_operational_log(
+            "guardrails.completed",
             request_id=request_id,
+            run_id=run_id,
+            thread_id=thread_id,
             node_name="guardrails",
             latency_ms=latency_ms,
             issues_count=len(issues),

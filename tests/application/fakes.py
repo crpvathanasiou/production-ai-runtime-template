@@ -7,6 +7,11 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.application.execution import (
+    ApplicationTelemetryEvent,
+    ExecutionContext,
+    LLMInvocationId,
+)
 from app.application.ports.llm import LLMExecutionMetadata, StructuredLLMResult, T
 from app.application.prompts import PromptRef, ResolvedPrompt
 
@@ -33,12 +38,16 @@ class FakeLLMPort:
     async def generate_structured(
         self,
         *,
+        context: ExecutionContext,
+        invocation_id: LLMInvocationId,
         system_prompt: str | None,
         prompt: str,
         response_schema: type[T],
     ) -> StructuredLLMResult[T]:
         self.calls.append(
             {
+                "context": context,
+                "invocation_id": invocation_id,
                 "system_prompt": system_prompt,
                 "prompt": prompt,
                 "response_schema": response_schema,
@@ -89,3 +98,11 @@ class FakePromptRepository:
         if self._resolved is None:
             raise AssertionError("FakePromptRepository requires resolved or error")
         return self._resolved
+
+
+class RecordingTelemetry:
+    def __init__(self) -> None:
+        self.events: list[ApplicationTelemetryEvent] = []
+
+    def emit(self, event: ApplicationTelemetryEvent) -> None:
+        self.events.append(event)

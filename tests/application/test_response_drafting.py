@@ -1,5 +1,13 @@
+import inspect
+
 import pytest
 
+from app.application.execution import (
+    ExecutionContext,
+    LLMInvocationStarted,
+    OperationFailed,
+    OperationStarted,
+)
 from app.application.ports.llm import LLMExecutionMetadata
 from app.application.prompts import (
     PromptIdentity,
@@ -14,10 +22,15 @@ from app.application.response_drafting import (
 )
 from app.core.exceptions import ModelOutputParsingError, UpstreamServiceError
 from app.schemas import ResponseDrafting, RetrievedDocument, SupportTicket, TriageOutput
-from tests.application.fakes import FakeLLMPort, FakePromptRepository
+from app.telemetry import NoOpTelemetry
+from tests.application.fakes import FakeLLMPort, FakePromptRepository, RecordingTelemetry
 
 _PROMPT_REF = PromptRef(prompt_id="response-drafting", revision=1)
 _EXPECTED_IDENTITY = PromptIdentity(ref=_PROMPT_REF, content_hash="draft-hash")
+
+
+def _context() -> ExecutionContext:
+    return ExecutionContext(request_id="req-draft-app", run_id="run-draft-app")
 
 
 def _ticket() -> SupportTicket:
@@ -61,12 +74,20 @@ def _operation(
     *,
     llm: FakeLLMPort,
     prompts: FakePromptRepository,
+    telemetry: RecordingTelemetry | NoOpTelemetry | None = None,
 ) -> ResponseDraftingOperation:
     return ResponseDraftingOperation(
         llm=llm,
         prompt_repository=prompts,
         prompt_ref=_PROMPT_REF,
+        telemetry=telemetry if telemetry is not None else NoOpTelemetry(),
     )
+
+
+def test_response_drafting_requires_explicit_telemetry() -> None:
+    params = inspect.signature(ResponseDraftingOperation.__init__).parameters
+    assert "telemetry" in params
+    assert params["telemetry"].default is inspect.Parameter.empty
 
 
 @pytest.mark.asyncio
@@ -80,6 +101,7 @@ async def test_response_drafting_with_no_retrieved_documents() -> None:
     operation = _operation(llm=llm, prompts=prompts)
 
     outcome = await operation.execute(
+        context=_context(),
         ticket=ticket,
         triage_result=triage,
         retrieved_documents=[],
@@ -122,6 +144,7 @@ async def test_response_drafting_direct_caller_receives_prompt_identity() -> Non
     operation = _operation(llm=llm, prompts=prompts)
 
     outcome = await operation.execute(
+        context=_context(),
         ticket=_ticket(),
         triage_result=_triage(),
         retrieved_documents=[],
@@ -153,6 +176,7 @@ async def test_response_drafting_with_retrieved_documents() -> None:
     operation = _operation(llm=llm, prompts=prompts)
 
     outcome = await operation.execute(
+        context=_context(),
         ticket=ticket,
         triage_result=triage,
         retrieved_documents=documents,
@@ -183,6 +207,7 @@ async def test_response_drafting_prompt_not_found_propagates() -> None:
 
     with pytest.raises(PromptNotFoundError, match="missing draft"):
         await operation.execute(
+            context=_context(),
             ticket=_ticket(),
             triage_result=_triage(),
             retrieved_documents=[],
@@ -198,6 +223,7 @@ async def test_response_drafting_prompt_render_error_propagates() -> None:
 
     with pytest.raises(PromptRenderError, match="bad draft vars"):
         await operation.execute(
+            context=_context(),
             ticket=_ticket(),
             triage_result=_triage(),
             retrieved_documents=[],
@@ -213,6 +239,7 @@ async def test_response_drafting_parsing_failure_propagates() -> None:
 
     with pytest.raises(ModelOutputParsingError, match="draft parse failed"):
         await operation.execute(
+            context=_context(),
             ticket=_ticket(),
             triage_result=_triage(),
             retrieved_documents=[],
@@ -227,7 +254,72 @@ async def test_response_drafting_upstream_failure_propagates() -> None:
 
     with pytest.raises(UpstreamServiceError, match="draft upstream failed"):
         await operation.execute(
+            context=_context(),
             ticket=_ticket(),
             triage_result=_triage(),
             retrieved_documents=[],
         )
+
+
+@pytest.mark.asyncio
+async def test_response_drafting_emits_prompt_identity_before_llm_failure() -> None:
+    telemetry = RecordingTelemetry()
+    llm = FakeLLMPort(error=ModelOutputParsingError("draft parse failed"))
+    operation = _operation(
+        llm=llm,
+        prompts=FakePromptRepository(resolved=_resolved()),
+        telemetry=telemetry,
+    )
+
+    with pytest.raises(ModelOutputParsingError):
+        await operation.execute(
+            context=_context(),
+            ticket=_ticket(),
+            triage_result=_triage(),
+            retrieved_documents=[],
+        )
+
+    assert isinstance(telemetry.events[1], LLMInvocationStarted)
+    assert telemetry.events[1].prompt_identity == _EXPECTED_IDENTITY
+    assert isinstance(telemetry.events[-1], OperationFailed)
+    assert telemetry.events[-1].error_category == "model_output"
+    assert telemetry.events[-1].invocation_id == llm.calls[0]["invocation_id"]
+    assert telemetry.events[-1].duration_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_response_drafting_unexpected_failure_emits_failed_with_invocation_id() -> None:
+    telemetry = RecordingTelemetry()
+    llm = FakeLLMPort(error=RuntimeError("draft boom"))
+    operation = _operation(
+        llm=llm,
+        prompts=FakePromptRepository(resolved=_resolved()),
+        telemetry=telemetry,
+    )
+
+    with pytest.raises(RuntimeError, match="draft boom"):
+        await operation.execute(
+            context=_context(),
+            ticket=_ticket(),
+            triage_result=_triage(),
+            retrieved_documents=[],
+        )
+
+    assert [type(e) for e in telemetry.events] == [
+        OperationStarted,
+        LLMInvocationStarted,
+        OperationFailed,
+    ]
+    invocation_started = telemetry.events[1]
+    failed = telemetry.events[2]
+    assert isinstance(invocation_started, LLMInvocationStarted)
+    assert invocation_started.operation_name == "response_drafting"
+    assert invocation_started.prompt_identity == _EXPECTED_IDENTITY
+    assert isinstance(failed, OperationFailed)
+    assert failed.operation_name == "response_drafting"
+    assert failed.error_category == "unexpected"
+    assert failed.error_type == "RuntimeError"
+    assert failed.invocation_id == invocation_started.invocation_id
+    assert failed.invocation_id == llm.calls[0]["invocation_id"]
+    assert failed.duration_ms >= 0
+    assert llm.call_count == 1

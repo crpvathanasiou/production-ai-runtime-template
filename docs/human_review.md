@@ -66,11 +66,14 @@ Graph routing (`route_after_guardrails`) must also preserve upstream
 
 # 2. `app/nodes/human_review.py`
 
+Current M3 operational logging uses stdlib `format_operational_log` with visible
+`request_id` / `run_id` / optional `thread_id`. There is no node `@traceable` /
+direct LangSmith ownership. Illustrative workflow logic:
+
 ```python
 import time
-from langsmith import traceable
 
-from app.core.logging import bind_log_context, get_logger
+from app.core.logging import format_operational_log, get_logger
 from app.graph_state import GraphState
 
 logger = get_logger(__name__)
@@ -97,15 +100,18 @@ def _human_review_required(state: GraphState) -> bool:
     return False
 
 
-@traceable(run_type="chain", name="human_review_node")
 async def human_review_node(state: GraphState) -> GraphState:
     started = time.perf_counter()
     request_id = state.request_id
+    run_id = state.run_id
+    thread_id = state.thread_id
 
     logger.info(
-        "human_review.started",
-        extra=bind_log_context(
+        format_operational_log(
+            "human_review.started",
             request_id=request_id,
+            run_id=run_id,
+            thread_id=thread_id,
             node_name="human_review",
         ),
     )
@@ -123,9 +129,11 @@ async def human_review_node(state: GraphState) -> GraphState:
         }
 
         logger.info(
-            "human_review.skipped",
-            extra=bind_log_context(
+            format_operational_log(
+                "human_review.skipped",
                 request_id=request_id,
+                run_id=run_id,
+                thread_id=thread_id,
                 node_name="human_review",
                 review_required=False,
                 review_status="not_required",
@@ -145,9 +153,11 @@ async def human_review_node(state: GraphState) -> GraphState:
         }
 
         logger.info(
-            "human_review.pending",
-            extra=bind_log_context(
+            format_operational_log(
+                "human_review.pending",
                 request_id=request_id,
+                run_id=run_id,
+                thread_id=thread_id,
                 node_name="human_review",
                 review_required=True,
                 review_status="pending",
@@ -166,9 +176,11 @@ async def human_review_node(state: GraphState) -> GraphState:
         }
 
         logger.info(
-            "human_review.approved",
-            extra=bind_log_context(
+            format_operational_log(
+                "human_review.approved",
                 request_id=request_id,
+                run_id=run_id,
+                thread_id=thread_id,
                 node_name="human_review",
                 review_required=True,
                 review_status="approved",
@@ -186,9 +198,11 @@ async def human_review_node(state: GraphState) -> GraphState:
     }
 
     logger.info(
-        "human_review.rejected",
-        extra=bind_log_context(
+        format_operational_log(
+            "human_review.rejected",
             request_id=request_id,
+            run_id=run_id,
+            thread_id=thread_id,
             node_name="human_review",
             review_required=True,
             review_status="rejected",
@@ -277,6 +291,7 @@ from app.schemas import ShieldOutput, SupportTicket, TriageOutput
 async def test_human_review_node_stays_pending_when_decision_not_provided():
     state = GraphState(
         request_id="req-human-001",
+        run_id="run-human-001",
         initial_ticket=SupportTicket(
             customer_message="I want a refund for a double charge.",
             customer_metadata={},
@@ -316,6 +331,7 @@ async def test_human_review_node_stays_pending_when_decision_not_provided():
 async def test_human_review_node_marks_completed_when_approved():
     state = GraphState(
         request_id="req-human-002",
+        run_id="run-human-002",
         initial_ticket=SupportTicket(
             customer_message="I was charged twice.",
             customer_metadata={},
@@ -347,6 +363,7 @@ async def test_human_review_node_marks_completed_when_approved():
 async def test_human_review_node_blocks_when_rejected():
     state = GraphState(
         request_id="req-human-003",
+        run_id="run-human-003",
         initial_ticket=SupportTicket(
             customer_message="My account was hacked.",
             customer_metadata={},

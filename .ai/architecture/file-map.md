@@ -16,7 +16,7 @@ Dependency direction for the **target** architecture:
 Client → Delivery Adapter → [optional LangGraph driving/orchestration] → Application Core → Ports ← outbound/driven adapters
 ```
 
-The seed previously violated that direction (nodes importing the OpenAI wrapper directly). After M2, active LLM paths go Node → Application Operation → `PromptRepository` → `ResolvedPrompt` → `LLMPort` → adapter; GraphState and LangGraph remain orchestration concerns. Do not invent a future runtime layout beyond what exists.
+The seed previously violated that direction (nodes importing the OpenAI wrapper directly). After M2/M3, active LLM paths go Node → Application Operation → `PromptRepository` → `ResolvedPrompt` → `LLMPort` → adapter; GraphState and LangGraph remain orchestration concerns; Application telemetry and execution identity are application-owned. Do not invent a future runtime layout beyond what exists.
 
 Documentation vs runtime (do not conflate):
 
@@ -29,10 +29,10 @@ Specialized contracts / operations / testing / project-workflow documentation
       (when those documents exist)
 
 Runtime application contracts and ports
-    → present after M2: `app/application/` + `LLMPort` + prompt lifecycle types/`PromptRepository`; not a full `app/ports/` / `app/adapters/` tree
+    → present after M3: `app/application/` + `LLMPort` + prompt lifecycle + `ExecutionContext` / `LLMInvocationId` + `TelemetryPort`; not a full `app/ports/` / `app/adapters/` tree
 ```
 
-The current tree includes template architecture/governance plus specialized `.ai/contracts/`, `.ai/operations/`, `.ai/projects/` (`_template` only; no active project), `.ai/skills/`, and the remaining engineering strategy documents. Runtime `app/ports/` and `app/adapters/` packages are **not** present as separate trees; M1 placed the LLM port under `app/application/ports/`, and M2 placed prompt lifecycle contracts under `app/application/prompts/`. Do not invent a future runtime layout here. Documentation of contracts is not Python contract implementation.
+The current tree includes template architecture/governance plus specialized `.ai/contracts/`, `.ai/operations/`, `.ai/projects/` (`_template` only; no active project), `.ai/skills/`, and the remaining engineering strategy documents. Runtime `app/ports/` and `app/adapters/` packages are **not** present as separate trees; M1 placed the LLM port under `app/application/ports/`, M2 placed prompt lifecycle contracts under `app/application/prompts/`, and M3 placed execution identity / telemetry under `app/application/` (+ `app/telemetry.py` baseline adapters). Do not invent a future runtime layout here. Documentation of contracts is not Python contract implementation.
 
 ---
 
@@ -42,7 +42,7 @@ The current tree includes template architecture/governance plus specialized `.ai
 
 **Role:** mixed (delivery + domain/example + application core + adapter code in one tree)
 
-**Depends on:** FastAPI, Pydantic, LangGraph, OpenAI SDK, LangSmith, Redis client
+**Depends on:** FastAPI, Pydantic, LangGraph, OpenAI SDK, Redis client (LangSmith may remain only as a transitive package via LangGraph/langchain-core; it is not a direct project-owned runtime integration)
 
 **Must not introduce:** new runtime layers beyond approved milestones, extra providers, generic executors, or a parallel app package
 
@@ -52,17 +52,45 @@ The current tree includes template architecture/governance plus specialized `.ai
 
 ## `app/application/`
 
-Files: `input_shield.py`, `triage.py`, `planner.py`, `response_drafting.py`, `ports/llm.py`, `prompts/` (plus package `__init__` modules)
+Files: `execution.py`, `input_shield.py`, `triage.py`, `planner.py`, `response_drafting.py`, `ports/llm.py`, `ports/telemetry.py`, `prompts/` (plus package `__init__` modules)
 
-**Current responsibility:** Application Core for the four live LLM use cases. Owns application/use-case semantics, explicit `PromptRef` resolution through `PromptRepository`, domain → prompt-variable preprocessing, `LLMPort` usage, Input Shield deterministic max-prompt policy and normalization/fallback, Planner normalization/fallback, Triage and Response Drafting LLM execution, and `PromptIdentity` on operation outcomes where a prompt was resolved.
+**Current responsibility:** Application Core for the four live LLM use cases. Owns application/use-case semantics, explicit `PromptRef` resolution through `PromptRepository`, domain → prompt-variable preprocessing, `LLMPort` usage, Input Shield deterministic max-prompt policy and normalization/fallback, Planner normalization/fallback, Triage and Response Drafting LLM execution, and `PromptIdentity` on operation outcomes where a prompt was resolved. After M3 also owns `ExecutionContext`, `LLMInvocationId`, typed application execution events / error categories, and requires explicit `TelemetryPort` injection on the four operations.
 
 **Role:** reusable/core-related (Application Core for LLM paths)
 
-**Depends on:** `LLMPort`, `PromptRepository` / `PromptRef` / `ResolvedPrompt`, schemas/domain types used by operations — **not** `GraphState`, LangGraph, OpenAI SDK, LangSmith, concrete provider models, `LocalPromptRepository`, `PromptDefinition`, `request_id`, or `workflow_outcome`
+**Depends on:** `LLMPort`, `TelemetryPort`, `PromptRepository` / `PromptRef` / `ResolvedPrompt`, schemas/domain types used by operations — **not** `GraphState`, LangGraph, OpenAI SDK, LangSmith, concrete provider models, `LocalPromptRepository`, `PromptDefinition`, or `workflow_outcome`
 
-**Must not introduce:** GraphState/framework/provider leakage into Application Core; domain-specific knowledge into the prompt repository port
+**Must not introduce:** GraphState/framework/provider leakage into Application Core; domain-specific knowledge into the prompt repository port; vendor tracing objects into `LLMPort`
 
-**Change belongs here:** application LLM use-case semantics under approved milestones. `ExecutionContext` / Telemetry are **not** implemented here yet.
+**Change belongs here:** application LLM use-case semantics under approved milestones.
+
+---
+
+## `app/application/ports/telemetry.py`
+
+**Current responsibility:** application-owned `TelemetryPort` protocol (`emit` of typed `ApplicationTelemetryEvent`s).
+
+**Role:** reusable/core-related (Application Core port)
+
+**Depends on:** `app.application.execution` event types
+
+**Must not introduce:** GraphState, provider SDKs, logging frameworks as port contracts, or LangSmith/OpenTelemetry types
+
+**Change belongs here:** Application telemetry port surface under approved milestones.
+
+---
+
+## `app/telemetry.py`
+
+**Current responsibility:** baseline Application telemetry adapters — `NoOpTelemetry` and `StdlibTelemetry` (renders safe event fields via stdlib logging). Composition injects one shared `StdlibTelemetry`.
+
+**Role:** outbound/driven adapter for the Application telemetry boundary (thin, synchronous, best-effort)
+
+**Depends on:** `TelemetryPort` / application execution events, `app.core.logging.get_logger`, stdlib `json` / logging
+
+**Must not introduce:** span frameworks, metrics backends, or vendor observability SDKs as Application contracts
+
+**Change belongs here:** baseline Application telemetry adapters only.
 
 ---
 
@@ -84,11 +112,11 @@ Files: `models.py`, `repository.py`, `__init__.py`
 
 ## `app/composition.py`
 
-**Current responsibility:** explicit production composition root. Reads settings; constructs four configured `AsyncOpenAIWrapper` instances; constructs one shared `LocalPromptRepository` supplying all four immutable V1 definitions; constructs four Application Operations with explicit `PromptRef`s; supplies them to `build_graph(...)`; supplies model-name labels only for orchestration observability.
+**Current responsibility:** explicit production composition root. Reads settings; constructs four configured `AsyncOpenAIWrapper` instances; constructs one shared `LocalPromptRepository` supplying all four immutable V1 definitions; constructs one shared `StdlibTelemetry`; constructs four Application Operations with explicit `PromptRef`s and telemetry; supplies them to `build_graph(...)`; supplies model-name labels only for orchestration observability.
 
 **Role:** composition / wiring (not Application Core business semantics)
 
-**Depends on:** settings, Application Operations, `LocalPromptRepository`, V1 prompt definitions, `AsyncOpenAIWrapper`, `app.graph.build_graph`
+**Depends on:** settings, Application Operations, `LocalPromptRepository`, V1 prompt definitions, `AsyncOpenAIWrapper`, `StdlibTelemetry`, `app.graph.build_graph`
 
 **Must not introduce:** business policy inside composition beyond wiring
 
@@ -100,9 +128,9 @@ Files: `models.py`, `repository.py`, `__init__.py`
 
 Files: `settings.py`, `exceptions.py`, `logging.py`
 
-**Current responsibility:** environment settings (`pydantic-settings`), application exception types, stdlib logging helpers.
+**Current responsibility:** environment settings (`pydantic-settings`), application exception types, stdlib logging helpers including `format_operational_log` for minimal rendered operational records.
 
-**Role:** reusable/core-related (settings also encode OpenAI/LangSmith/Redis and Customer Support model-name fields)
+**Role:** reusable/core-related (settings also encode OpenAI/Redis and Customer Support model-name fields)
 
 **Depends on:** `pydantic-settings`, stdlib logging
 
@@ -116,13 +144,13 @@ Files: `settings.py`, `exceptions.py`, `logging.py`
 
 File: `openai_wrapper.py`
 
-**Current responsibility:** concrete outbound OpenAI adapter behind `LLMPort` — async chat/structured-output with retries, timeouts, provider parsing, wrapper-level guardrails, and LangSmith `@traceable`. Constructed in `app/composition.py`; **not** constructed or called directly by LangGraph nodes. Prompt-lifecycle agnostic (no `PromptRef` / revision / `content_hash`).
+**Current responsibility:** concrete outbound OpenAI adapter behind `LLMPort` — async chat/structured-output with retries, timeouts, provider parsing, wrapper-level guardrails, and provider operational correlation logs on the structured path (`attempt_started` / `attempt_succeeded` / `retry_scheduled` / `failed`) using already-propagated `ExecutionContext` + `LLMInvocationId`. Constructed in `app/composition.py`; **not** constructed or called directly by LangGraph nodes. Prompt-lifecycle agnostic (no `PromptRef` / revision / `content_hash`). Does **not** own Application telemetry or LangSmith tracing.
 
 **Role:** outbound/driven adapter (OpenAI implementation of the LLM boundary)
 
-**Depends on:** OpenAI SDK, LangSmith, `app.core.settings`, `app.core.exceptions`
+**Depends on:** OpenAI SDK, `app.core.settings`, `app.core.exceptions`, `app.core.logging`, Application execution identity types for correlation only
 
-**Must not introduce:** additional provider SDKs, or application/domain contracts defined in OpenAI types
+**Must not introduce:** additional provider SDKs, Application telemetry ownership, or application/domain contracts defined in OpenAI types
 
 **Change belongs here:** OpenAI adapter behaviour. Do not add a second wrapper beside it.
 
@@ -153,13 +181,13 @@ These files are seeded prompt content / the local repository adapter — **not**
 
 Files: `input_shield.py`, `triage.py`, `planner.py`, `execute_plan.py`, `guardrails.py`, `human_review.py`, `finalize.py`
 
-**Current responsibility:** LangGraph orchestration adapters for the Customer Support workflow. Live LLM nodes receive Application Operations through typed factory closures; own GraphState mapping, orchestration prerequisites, `workflow_outcome` mapping, and request_id/logging/metadata. Copy safe prompt identity (`prompt_id`, `prompt_revision`, `prompt_content_hash`) into `additional_metadata` when an operation outcome exists. Do **not** resolve prompts, construct OpenAI providers, or own reusable prompt/LLM application semantics. `execute_plan` retains current retrieval/PlanStep orchestration and delegates response drafting generation to `ResponseDraftingOperation`.
+**Current responsibility:** LangGraph orchestration adapters for the Customer Support workflow. Live LLM nodes receive Application Operations through typed factory closures; own GraphState mapping, orchestration prerequisites, `workflow_outcome` mapping, and stdlib operational logging with visible `request_id` / `run_id` / optional `thread_id`. Copy safe prompt identity (`prompt_id`, `prompt_revision`, `prompt_content_hash`) into `additional_metadata` when an operation outcome exists. Do **not** resolve prompts, construct OpenAI providers, or own reusable prompt/LLM application semantics. `execute_plan` retains current retrieval/PlanStep orchestration and delegates response drafting generation to `ResponseDraftingOperation`.
 
 **Role:** domain/example-specific driving/orchestration
 
-**Depends on:** `GraphState`, injected Application Operations, guardrails, retrieval service, LangSmith
+**Depends on:** `GraphState`, injected Application Operations, guardrails, retrieval service, `app.core.logging`
 
-**Must not introduce:** reusable business contracts, provider construction, prompt resolution, or tool authorization as node-private SDK types
+**Must not introduce:** reusable business contracts, provider construction, prompt resolution, tool authorization as node-private SDK types, or vendor tracing ownership
 
 **Change belongs here:** this example graph’s orchestration only. Do not turn these nodes into a generic business graph.
 
@@ -213,13 +241,13 @@ File: `retrieval_service.py`
 
 ## `app/graph_state.py`
 
-**Current responsibility:** Pydantic `GraphState` for one Customer Support run (`request_id`, ticket, shield/triage/plan/draft fields, safety/HITL flags, `workflow_outcome`).
+**Current responsibility:** Pydantic `GraphState` for one Customer Support run (`request_id`, `run_id`, optional `thread_id`, ticket, shield/triage/plan/draft fields, safety/HITL flags, `workflow_outcome`). Carries orchestration correlation copies; does **not** own Application `ExecutionContext` and does **not** store `invocation_id`.
 
 **Role:** domain/example-specific graph-specific state — **not** business/domain persistence and **not** `ExecutionContext`
 
 **Depends on:** `app.schemas`
 
-**Must not introduce:** OpenAI/LangGraph SDK types, vendor telemetry objects, or durable store documents
+**Must not introduce:** OpenAI/LangGraph SDK types, vendor telemetry objects, durable store documents, or `invocation_id` as graph state
 
 **Change belongs here:** this graph’s working state. Keep it distinct from application business state.
 
@@ -305,7 +333,7 @@ Runs the app plus Redis 7. Container names still use `fastapi-prod-starter-*`. R
 
 ## `pyproject.toml`
 
-Package name `production-ai-runtime-template`. Runtime deps: FastAPI, uvicorn, pydantic-settings, redis, langgraph, openai, langsmith. Dev: pytest, httpx, ruff, pyright, pytest-asyncio. Python `^3.11`.
+Package name `production-ai-runtime-template`. Runtime deps: FastAPI, uvicorn, pydantic-settings, redis, langgraph, openai. Dev: pytest, httpx, ruff, pyright, pytest-asyncio. Python `^3.11`. LangSmith is **not** a direct project dependency; it may remain transitively installed via LangGraph/langchain-core.
 
 **Role:** engineering / infrastructure
 

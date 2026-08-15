@@ -1,5 +1,14 @@
+import inspect
+
 import pytest
 
+from app.application.execution import (
+    ExecutionContext,
+    LLMInvocationStarted,
+    OperationFailed,
+    OperationFallback,
+    OperationStarted,
+)
 from app.application.planner import PlannerOperation
 from app.application.ports.llm import LLMExecutionMetadata
 from app.application.prompts import (
@@ -17,10 +26,15 @@ from app.schemas import (
     SupportTicket,
     TriageOutput,
 )
-from tests.application.fakes import FakeLLMPort, FakePromptRepository
+from app.telemetry import NoOpTelemetry
+from tests.application.fakes import FakeLLMPort, FakePromptRepository, RecordingTelemetry
 
 _PROMPT_REF = PromptRef(prompt_id="planner", revision=1)
 _EXPECTED_IDENTITY = PromptIdentity(ref=_PROMPT_REF, content_hash="planner-hash")
+
+
+def _context() -> ExecutionContext:
+    return ExecutionContext(request_id="req-planner-app", run_id="run-planner-app")
 
 
 def _ticket() -> SupportTicket:
@@ -64,12 +78,24 @@ def _resolved() -> ResolvedPrompt:
     )
 
 
-def _operation(*, llm: FakeLLMPort, prompts: FakePromptRepository) -> PlannerOperation:
+def _operation(
+    *,
+    llm: FakeLLMPort,
+    prompts: FakePromptRepository,
+    telemetry: RecordingTelemetry | NoOpTelemetry | None = None,
+) -> PlannerOperation:
     return PlannerOperation(
         llm=llm,
         prompt_repository=prompts,
         prompt_ref=_PROMPT_REF,
+        telemetry=telemetry if telemetry is not None else NoOpTelemetry(),
     )
+
+
+def test_planner_requires_explicit_telemetry() -> None:
+    params = inspect.signature(PlannerOperation.__init__).parameters
+    assert "telemetry" in params
+    assert params["telemetry"].default is inspect.Parameter.empty
 
 
 @pytest.mark.asyncio
@@ -108,6 +134,7 @@ async def test_planner_success_returns_normalized_agent_state() -> None:
     triage = _triage()
 
     outcome = await operation.execute(
+        context=_context(),
         ticket=ticket,
         shield_result=shield,
         triage_result=triage,
@@ -175,6 +202,7 @@ async def test_planner_missing_current_step_id_defaults_to_first() -> None:
     operation = _operation(llm=llm, prompts=prompts)
 
     outcome = await operation.execute(
+        context=_context(),
         ticket=_ticket(),
         shield_result=_shield(),
         triage_result=_triage(),
@@ -190,6 +218,7 @@ async def test_planner_empty_plan_uses_safe_fallback() -> None:
     operation = _operation(llm=llm, prompts=prompts)
 
     outcome = await operation.execute(
+        context=_context(),
         ticket=_ticket(),
         shield_result=_shield(),
         triage_result=_triage(),
@@ -214,6 +243,7 @@ async def test_planner_prompt_not_found_propagates_without_fallback() -> None:
 
     with pytest.raises(PromptNotFoundError, match="missing planner"):
         await operation.execute(
+        context=_context(),
             ticket=_ticket(),
             shield_result=_shield(),
             triage_result=_triage(),
@@ -229,6 +259,7 @@ async def test_planner_prompt_render_error_propagates_without_fallback() -> None
 
     with pytest.raises(PromptRenderError, match="bad planner vars"):
         await operation.execute(
+        context=_context(),
             ticket=_ticket(),
             shield_result=_shield(),
             triage_result=_triage(),
@@ -243,6 +274,7 @@ async def test_planner_parsing_failure_uses_safe_fallback() -> None:
     operation = _operation(llm=llm, prompts=prompts)
 
     outcome = await operation.execute(
+        context=_context(),
         ticket=_ticket(),
         shield_result=_shield(),
         triage_result=_triage(),
@@ -264,6 +296,7 @@ async def test_planner_upstream_failure_uses_safe_fallback() -> None:
     operation = _operation(llm=llm, prompts=prompts)
 
     outcome = await operation.execute(
+        context=_context(),
         ticket=_ticket(),
         shield_result=_shield(),
         triage_result=_triage(),
@@ -281,6 +314,7 @@ async def test_planner_unexpected_exception_uses_safe_fallback() -> None:
     operation = _operation(llm=llm, prompts=prompts)
 
     outcome = await operation.execute(
+        context=_context(),
         ticket=_ticket(),
         shield_result=_shield(),
         triage_result=_triage(),
@@ -295,3 +329,55 @@ async def test_planner_unexpected_exception_uses_safe_fallback() -> None:
         "human",
     ]
     assert "retrieval_agent" not in {step.owner for step in outcome.agent_state.plan}
+
+
+@pytest.mark.asyncio
+async def test_planner_fallback_emits_operation_fallback() -> None:
+    telemetry = RecordingTelemetry()
+    llm = FakeLLMPort(error=UpstreamServiceError("planner upstream failed"))
+    operation = _operation(
+        llm=llm,
+        prompts=FakePromptRepository(resolved=_resolved()),
+        telemetry=telemetry,
+    )
+
+    outcome = await operation.execute(
+        context=_context(),
+        ticket=_ticket(),
+        shield_result=_shield(),
+        triage_result=_triage(),
+    )
+
+    assert outcome.fallback_used is True
+    assert [type(e) for e in telemetry.events] == [
+        OperationStarted,
+        LLMInvocationStarted,
+        OperationFallback,
+    ]
+    fallback = telemetry.events[-1]
+    assert isinstance(fallback, OperationFallback)
+    assert fallback.error_category == "provider"
+    assert fallback.invocation_id == llm.calls[0]["invocation_id"]
+    assert fallback.duration_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_planner_prompt_resolution_emits_failed_without_fallback() -> None:
+    telemetry = RecordingTelemetry()
+    operation = _operation(
+        llm=FakeLLMPort(result=SupportAgentState(plan=[], current_step_id=None)),
+        prompts=FakePromptRepository(error=PromptNotFoundError("missing planner")),
+        telemetry=telemetry,
+    )
+
+    with pytest.raises(PromptNotFoundError):
+        await operation.execute(
+            context=_context(),
+            ticket=_ticket(),
+            shield_result=_shield(),
+            triage_result=_triage(),
+        )
+
+    assert isinstance(telemetry.events[-1], OperationFailed)
+    assert telemetry.events[-1].error_category == "prompt_resolution"
+    assert telemetry.events[-1].invocation_id is None

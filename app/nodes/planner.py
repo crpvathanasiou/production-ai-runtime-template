@@ -1,10 +1,9 @@
 import time
 from typing import Protocol
 
-from langsmith import traceable
-
+from app.application.execution import ExecutionContext
 from app.application.planner import PlannerOutcome
-from app.core.logging import bind_log_context, get_logger
+from app.core.logging import format_operational_log, get_logger
 from app.graph_state import GraphState
 from app.schemas import ShieldOutput, SupportTicket, TriageOutput
 
@@ -22,6 +21,7 @@ class SupportsPlannerExecute(Protocol):
     async def execute(
         self,
         *,
+        context: ExecutionContext,
         ticket: SupportTicket,
         shield_result: ShieldOutput,
         triage_result: TriageOutput,
@@ -33,15 +33,23 @@ def make_planner_node(
     *,
     model_name: str,
 ):
-    @traceable(run_type="chain", name="planner_node")
     async def planner_node(state: GraphState) -> GraphState:
         started = time.perf_counter()
         request_id = state.request_id
+        run_id = state.run_id
+        thread_id = state.thread_id
+        context = ExecutionContext(
+            request_id=state.request_id,
+            run_id=state.run_id,
+            thread_id=state.thread_id,
+        )
 
         logger.info(
-            "planner.started",
-            extra=bind_log_context(
+            format_operational_log(
+                "planner.started",
                 request_id=request_id,
+                run_id=run_id,
+                thread_id=thread_id,
                 node_name="planner",
             ),
         )
@@ -65,6 +73,7 @@ def make_planner_node(
             return state
 
         outcome = await operation.execute(
+            context=context,
             ticket=state.initial_ticket,
             shield_result=state.shield_result,
             triage_result=state.triage_result,
@@ -93,9 +102,11 @@ def make_planner_node(
             }
 
             logger.info(
-                "planner.completed",
-                extra=bind_log_context(
+                format_operational_log(
+                    "planner.completed",
                     request_id=request_id,
+                    run_id=run_id,
+                    thread_id=thread_id,
                     node_name="planner",
                     model_name=model_name,
                     latency_ms=latency_ms,
@@ -123,9 +134,11 @@ def make_planner_node(
         error_type = outcome.error_type or "Exception"
         if error_type in _RECOVERED_ERROR_TYPES:
             logger.error(
-                "planner.recovered_error",
-                extra=bind_log_context(
+                format_operational_log(
+                    "planner.recovered_error",
                     request_id=request_id,
+                    run_id=run_id,
+                    thread_id=thread_id,
                     node_name="planner",
                     error_type=error_type,
                     latency_ms=latency_ms,
@@ -133,9 +146,11 @@ def make_planner_node(
             )
         else:
             logger.error(
-                "planner.unexpected_error",
-                extra=bind_log_context(
+                format_operational_log(
+                    "planner.unexpected_error",
                     request_id=request_id,
+                    run_id=run_id,
+                    thread_id=thread_id,
                     node_name="planner",
                     error_type=error_type,
                     latency_ms=latency_ms,

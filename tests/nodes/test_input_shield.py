@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import inspect
+import logging
 
 import pytest
 
 import app.nodes.input_shield as input_shield_module
+from app.application.execution import ExecutionContext
 from app.application.input_shield import InputShieldOutcome
 from app.application.ports.llm import LLMExecutionMetadata
 from app.application.prompts import PromptIdentity, PromptRef
 from app.graph_state import GraphState
 from app.nodes.input_shield import make_input_shield_node
 from app.schemas import ShieldOutput, SupportTicket
+from tests.test_logging import assert_visible_correlation
 
 _PROMPT_IDENTITY = PromptIdentity(
     ref=PromptRef(prompt_id="input-shield", revision=1),
@@ -24,10 +27,15 @@ _IDENTITY_KEYS = ("prompt_id", "prompt_revision", "prompt_content_hash")
 class FakeInputShieldOperation:
     def __init__(self, outcome: InputShieldOutcome) -> None:
         self._outcome = outcome
-        self.calls: list[SupportTicket] = []
+        self.calls: list[dict] = []
 
-    async def execute(self, ticket: SupportTicket) -> InputShieldOutcome:
-        self.calls.append(ticket)
+    async def execute(
+        self,
+        *,
+        context: ExecutionContext,
+        ticket: SupportTicket,
+    ) -> InputShieldOutcome:
+        self.calls.append({"context": context, "ticket": ticket})
         return self._outcome
 
 
@@ -42,6 +50,8 @@ def _ticket() -> SupportTicket:
 def _state() -> GraphState:
     return GraphState(
         request_id="req-shield-001",
+        run_id="run-shield-001",
+        thread_id="thread-shield-001",
         initial_ticket=_ticket(),
     )
 
@@ -77,7 +87,12 @@ async def test_input_shield_node_fail_fast_outcome():
     updated = await node(_state())
 
     assert len(operation.calls) == 1
-    assert operation.calls[0].customer_message == _ticket().customer_message
+    assert operation.calls[0]["ticket"].customer_message == _ticket().customer_message
+    assert operation.calls[0]["context"] == ExecutionContext(
+        request_id="req-shield-001",
+        run_id="run-shield-001",
+        thread_id="thread-shield-001",
+    )
     assert updated.shield_result == shield
     assert updated.workflow_outcome == "blocked"
     meta = updated.additional_metadata["input_shield"]
@@ -212,3 +227,97 @@ async def test_input_shield_node_llm_failure_fallback():
     assert err["prompt_revision"] == 1
     assert err["prompt_content_hash"] == "input-shield-hash"
     _assert_no_raw_prompt_content(err)
+
+
+@pytest.mark.asyncio
+async def test_input_shield_operational_logs_visible_correlation(caplog):
+    secret_message = "SECRET_CUSTOMER_MESSAGE_SENTINEL"
+    shield = ShieldOutput(
+        decision="allow",
+        risk_level="low",
+        categories=["valid_support_request"],
+        sanitized_message=secret_message,
+        should_route_to_human=False,
+        clarification_question=None,
+        reasoning="Valid request.",
+    )
+    operation = FakeInputShieldOperation(
+        InputShieldOutcome(
+            output=shield,
+            source="llm",
+            execution=LLMExecutionMetadata(latency_ms=1.0, attempts=1),
+            error_type=None,
+            error_message=None,
+            prompt_identity=_PROMPT_IDENTITY,
+        )
+    )
+    node = make_input_shield_node(operation, model_name="gpt-shield-test")
+    state = GraphState(
+        request_id="req-shield-log-001",
+        run_id="run-shield-log-001",
+        thread_id="thread-shield-log-001",
+        initial_ticket=SupportTicket(
+            customer_message=secret_message,
+            customer_metadata={},
+            order_account_metadata={},
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.nodes.input_shield"):
+        updated = await node(state)
+
+    assert updated.workflow_outcome == "running"
+    messages = [record.getMessage() for record in caplog.records]
+    completed = [m for m in messages if "input_shield.completed" in m]
+    assert completed
+    assert_visible_correlation(
+        completed[0],
+        request_id="req-shield-log-001",
+        run_id="run-shield-log-001",
+        node_name="input_shield",
+        event="input_shield.completed",
+        thread_id="thread-shield-log-001",
+    )
+    assert secret_message not in "\n".join(messages)
+
+
+@pytest.mark.asyncio
+async def test_input_shield_operational_logs_omit_none_thread_id(caplog):
+    shield = ShieldOutput(
+        decision="block",
+        risk_level="high",
+        categories=["non_actionable"],
+        sanitized_message="",
+        should_route_to_human=False,
+        clarification_question=None,
+        reasoning="Empty message.",
+    )
+    operation = FakeInputShieldOperation(
+        InputShieldOutcome(
+            output=shield,
+            source="heuristic_fail_fast",
+            execution=None,
+            error_type=None,
+            error_message=None,
+            prompt_identity=None,
+        )
+    )
+    node = make_input_shield_node(operation, model_name="unused-model")
+    state = GraphState(
+        request_id="req-shield-log-002",
+        run_id="run-shield-log-002",
+        thread_id=None,
+        initial_ticket=_ticket(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.nodes.input_shield"):
+        updated = await node(state)
+
+    assert updated.thread_id is None
+    messages = [record.getMessage() for record in caplog.records]
+    assert messages
+    for message in messages:
+        assert '"thread_id"' not in message
+        assert "req-shield-log-002" in message
+        assert "run-shield-log-002" in message
+        assert "input_shield" in message

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import inspect
+import logging
 
 import pytest
 
 import app.nodes.planner as planner_module
+from app.application.execution import ExecutionContext
 from app.application.planner import PlannerOutcome
 from app.application.ports.llm import LLMExecutionMetadata
 from app.application.prompts import PromptIdentity, PromptRef
@@ -19,6 +21,7 @@ from app.schemas import (
     SupportTicket,
     TriageOutput,
 )
+from tests.test_logging import assert_visible_correlation
 
 _PROMPT_IDENTITY = PromptIdentity(
     ref=PromptRef(prompt_id="planner", revision=1),
@@ -34,12 +37,14 @@ class FakePlannerOperation:
     async def execute(
         self,
         *,
+        context: ExecutionContext,
         ticket: SupportTicket,
         shield_result: ShieldOutput,
         triage_result: TriageOutput,
     ) -> PlannerOutcome:
         self.calls.append(
             {
+                "context": context,
                 "ticket": ticket,
                 "shield_result": shield_result,
                 "triage_result": triage_result,
@@ -142,6 +147,7 @@ async def test_planner_node_missing_shield_blocked():
     node = make_planner_node(operation, model_name="gpt-planner-test")
     state = GraphState(
         request_id="req-planner-001",
+        run_id="run-planner-001",
         initial_ticket=_ticket(),
         triage_result=_triage(),
     )
@@ -159,6 +165,7 @@ async def test_planner_node_missing_triage_blocked():
     node = make_planner_node(operation, model_name="gpt-planner-test")
     state = GraphState(
         request_id="req-planner-002",
+        run_id="run-planner-002",
         initial_ticket=_ticket(),
         shield_result=_shield(),
     )
@@ -182,6 +189,7 @@ async def test_planner_node_normal_outcome_running():
     node = make_planner_node(operation, model_name="gpt-planner-test")
     state = GraphState(
         request_id="req-planner-003",
+        run_id="run-planner-003",
         initial_ticket=_ticket(),
         shield_result=_shield(),
         triage_result=_triage(),
@@ -204,6 +212,11 @@ async def test_planner_node_normal_outcome_running():
     assert "system_prompt" not in meta
     assert "user_prompt" not in meta
     assert len(operation.calls) == 1
+    assert operation.calls[0]["context"] == ExecutionContext(
+        request_id="req-planner-003",
+        run_id="run-planner-003",
+        thread_id=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -244,6 +257,7 @@ async def test_planner_node_can_carry_retrieval_capable_plan_shape():
     node = make_planner_node(operation, model_name="gpt-planner-test")
     state = GraphState(
         request_id="req-planner-004",
+        run_id="run-planner-004",
         initial_ticket=_ticket(),
         shield_result=_shield(),
         triage_result=_triage(),
@@ -273,6 +287,7 @@ async def test_planner_node_fallback_outcome_needs_human_review():
     node = make_planner_node(operation, model_name="gpt-planner-test")
     state = GraphState(
         request_id="req-planner-005",
+        run_id="run-planner-005",
         initial_ticket=_ticket(),
         shield_result=_shield(),
         triage_result=_triage(),
@@ -303,3 +318,38 @@ async def test_planner_node_has_no_local_normalization_or_fallback():
     assert "_normalize_planner_output" not in source
     assert "_build_fallback_plan" not in source
     assert "AsyncOpenAIWrapper" not in source
+
+
+@pytest.mark.asyncio
+async def test_planner_operational_logs_visible_correlation(caplog):
+    operation = FakePlannerOperation(
+        _outcome(
+            agent_state=_simple_plan(),
+            execution=LLMExecutionMetadata(latency_ms=5.0, attempts=1),
+        )
+    )
+    node = make_planner_node(operation, model_name="gpt-planner-test")
+    state = GraphState(
+        request_id="req-planner-log-001",
+        run_id="run-planner-log-001",
+        thread_id="thread-planner-log-001",
+        initial_ticket=_ticket(),
+        shield_result=_shield(),
+        triage_result=_triage(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.nodes.planner"):
+        updated = await node(state)
+
+    assert updated.workflow_outcome == "running"
+    messages = [record.getMessage() for record in caplog.records]
+    completed = [m for m in messages if "planner.completed" in m]
+    assert completed
+    assert_visible_correlation(
+        completed[0],
+        request_id="req-planner-log-001",
+        run_id="run-planner-log-001",
+        node_name="planner",
+        event="planner.completed",
+        thread_id="thread-planner-log-001",
+    )

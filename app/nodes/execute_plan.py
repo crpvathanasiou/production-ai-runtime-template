@@ -1,10 +1,9 @@
 import time
 from typing import Protocol
 
-from langsmith import traceable
-
+from app.application.execution import ExecutionContext
 from app.application.response_drafting import ResponseDraftingOutcome
-from app.core.logging import bind_log_context, get_logger
+from app.core.logging import format_operational_log, get_logger
 from app.graph_state import GraphState
 from app.schemas import (
     PlanStep,
@@ -21,6 +20,7 @@ class SupportsResponseDraftingExecute(Protocol):
     async def execute(
         self,
         *,
+        context: ExecutionContext,
         ticket: SupportTicket,
         triage_result: TriageOutput,
         retrieved_documents: list[RetrievedDocument],
@@ -174,6 +174,11 @@ async def _execute_response_step(
         return _mark_step_failed(step, "Missing triage_result for response drafting.")
 
     result = await response_drafting_operation.execute(
+        context=ExecutionContext(
+            request_id=state.request_id,
+            run_id=state.run_id,
+            thread_id=state.thread_id,
+        ),
         ticket=state.initial_ticket,
         triage_result=state.triage_result,
         retrieved_documents=state.retrieved_documents or [],
@@ -227,15 +232,18 @@ def make_execute_plan_node(
     #
     # Downstream:
     # - guardrails validates the drafted response
-    @traceable(run_type="chain", name="execute_plan_node")
     async def execute_plan_node(state: GraphState) -> GraphState:
         started = time.perf_counter()
         request_id = state.request_id
+        run_id = state.run_id
+        thread_id = state.thread_id
 
         logger.info(
-            "execute_plan.started",
-            extra=bind_log_context(
+            format_operational_log(
+                "execute_plan.started",
                 request_id=request_id,
+                run_id=run_id,
+                thread_id=thread_id,
                 node_name="execute_plan",
             ),
         )
@@ -332,9 +340,11 @@ def make_execute_plan_node(
         }
 
         logger.info(
-            "execute_plan.completed",
-            extra=bind_log_context(
+            format_operational_log(
+                "execute_plan.completed",
                 request_id=request_id,
+                run_id=run_id,
+                thread_id=thread_id,
                 node_name="execute_plan",
                 latency_ms=latency_ms,
                 retrieved_documents_count=len(state.retrieved_documents or []),

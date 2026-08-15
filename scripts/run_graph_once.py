@@ -1,5 +1,6 @@
 import asyncio
 from pprint import pprint
+from uuid import uuid4
 
 from app.composition import build_runtime_graph
 from app.graph_state import GraphState
@@ -12,6 +13,8 @@ async def main():
 
     state = GraphState(
         request_id="req-manual-001",
+        run_id=str(uuid4()),
+        thread_id=None,
         initial_ticket=SupportTicket(
             customer_message="I have paid for the order but I have not received it, I need someone to communicate with me.",
             customer_metadata={"customer_id": "cust-123"},

@@ -14,6 +14,7 @@ from app.prompts.local_repository import LocalPromptRepository
 from app.prompts.planner_prompts import PLANNER_PROMPT_V1
 from app.prompts.response_drafting_prompts import RESPONSE_DRAFTING_PROMPT_V1
 from app.prompts.triage_prompts import TRIAGE_PROMPT_V1
+from app.telemetry import StdlibTelemetry
 
 
 def build_runtime_graph():
@@ -62,27 +63,32 @@ def build_runtime_graph():
             RESPONSE_DRAFTING_PROMPT_V1,
         ]
     )
+    telemetry = StdlibTelemetry()
 
     input_shield_operation = InputShieldOperation(
         llm=input_shield_llm,
         prompt_repository=prompt_repository,
         prompt_ref=INPUT_SHIELD_PROMPT_V1.ref,
+        telemetry=telemetry,
         max_prompt_chars=settings.input_shield_max_prompt_chars,
     )
     triage_operation = TriageOperation(
         llm=triage_llm,
         prompt_repository=prompt_repository,
         prompt_ref=TRIAGE_PROMPT_V1.ref,
+        telemetry=telemetry,
     )
     planner_operation = PlannerOperation(
         llm=planner_llm,
         prompt_repository=prompt_repository,
         prompt_ref=PLANNER_PROMPT_V1.ref,
+        telemetry=telemetry,
     )
     response_drafting_operation = ResponseDraftingOperation(
         llm=response_drafting_llm,
         prompt_repository=prompt_repository,
         prompt_ref=RESPONSE_DRAFTING_PROMPT_V1.ref,
+        telemetry=telemetry,
     )
 
     return build_graph(

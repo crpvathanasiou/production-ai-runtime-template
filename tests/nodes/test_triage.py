@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
+from app.application.execution import ExecutionContext
 from app.application.ports.llm import LLMExecutionMetadata
 from app.application.prompts import PromptIdentity, PromptRef
 from app.application.triage import TriageOutcome
@@ -11,6 +14,7 @@ from app.core.exceptions import ModelOutputParsingError, UpstreamServiceError
 from app.graph_state import GraphState
 from app.nodes.triage import make_triage_node
 from app.schemas import ShieldOutput, SupportTicket, TriageOutput
+from tests.test_logging import assert_visible_correlation
 
 _PROMPT_IDENTITY = PromptIdentity(
     ref=PromptRef(prompt_id="triage", revision=1),
@@ -32,10 +36,17 @@ class FakeTriageOperation:
     async def execute(
         self,
         *,
+        context: ExecutionContext,
         ticket: SupportTicket,
         shield_result: ShieldOutput,
     ) -> TriageOutcome:
-        self.calls.append({"ticket": ticket, "shield_result": shield_result})
+        self.calls.append(
+            {
+                "context": context,
+                "ticket": ticket,
+                "shield_result": shield_result,
+            }
+        )
         if self._error is not None:
             raise self._error
         if self._result is None:
@@ -91,7 +102,11 @@ def _outcome(parsed: TriageOutput, *, latency_ms: float = 1.0) -> TriageOutcome:
 async def test_triage_node_missing_shield_blocked():
     operation = FakeTriageOperation(result=_outcome(_triage()))
     node = make_triage_node(operation, model_name="gpt-triage-test")
-    state = GraphState(request_id="req-triage-001", initial_ticket=_ticket())
+    state = GraphState(
+        request_id="req-triage-001",
+        run_id="run-triage-001",
+        initial_ticket=_ticket(),
+    )
 
     updated = await node(state)
 
@@ -106,6 +121,7 @@ async def test_triage_node_skipped_when_shield_blocked():
     node = make_triage_node(operation, model_name="gpt-triage-test")
     state = GraphState(
         request_id="req-triage-002",
+        run_id="run-triage-002",
         initial_ticket=_ticket(),
         shield_result=ShieldOutput(
             decision="block",
@@ -132,6 +148,7 @@ async def test_triage_node_success_running():
     node = make_triage_node(operation, model_name="gpt-triage-test")
     state = GraphState(
         request_id="req-triage-003",
+        run_id="run-triage-003",
         initial_ticket=_ticket(),
         shield_result=_allow_shield(),
     )
@@ -152,15 +169,17 @@ async def test_triage_node_success_running():
     assert "system_prompt" not in meta
     assert "user_prompt" not in meta
     assert len(operation.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_triage_node_success_needs_human_review():
+    assert operation.calls[0]["context"] == ExecutionContext(
+        request_id="req-triage-003",
+        run_id="run-triage-003",
+        thread_id=None,
+    )
     parsed = _triage(requires_escalation=True)
     operation = FakeTriageOperation(result=_outcome(parsed, latency_ms=10.0))
     node = make_triage_node(operation, model_name="gpt-triage-test")
     state = GraphState(
         request_id="req-triage-004",
+        run_id="run-triage-004",
         initial_ticket=_ticket(),
         shield_result=_allow_shield(),
     )
@@ -182,6 +201,7 @@ async def test_triage_node_parsing_failure_needs_human_review():
     node = make_triage_node(operation, model_name="gpt-triage-test")
     state = GraphState(
         request_id="req-triage-005",
+        run_id="run-triage-005",
         initial_ticket=_ticket(),
         shield_result=_allow_shield(),
     )
@@ -204,6 +224,7 @@ async def test_triage_node_upstream_failure_needs_human_review():
     node = make_triage_node(operation, model_name="gpt-triage-test")
     state = GraphState(
         request_id="req-triage-006",
+        run_id="run-triage-006",
         initial_ticket=_ticket(),
         shield_result=_allow_shield(),
     )
@@ -214,3 +235,79 @@ async def test_triage_node_upstream_failure_needs_human_review():
     assert updated.additional_metadata["triage_error"]["error_type"] == "UpstreamServiceError"
     err = updated.additional_metadata["triage_error"]
     assert "prompt_id" not in err
+
+
+@pytest.mark.asyncio
+async def test_triage_operational_logs_visible_correlation(caplog):
+    secret_message = "SECRET_CUSTOMER_MESSAGE_SENTINEL"
+    parsed = _triage()
+    operation = FakeTriageOperation(result=_outcome(parsed))
+    node = make_triage_node(operation, model_name="gpt-triage-test")
+    state = GraphState(
+        request_id="req-triage-log-001",
+        run_id="run-triage-log-001",
+        thread_id="thread-triage-log-001",
+        initial_ticket=SupportTicket(
+            customer_message=secret_message,
+            customer_metadata={},
+            order_account_metadata={},
+        ),
+        shield_result=_allow_shield(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.nodes.triage"):
+        updated = await node(state)
+
+    assert updated.workflow_outcome == "running"
+    messages = [record.getMessage() for record in caplog.records]
+    completed = [m for m in messages if "triage.completed" in m]
+    assert completed
+    assert_visible_correlation(
+        completed[0],
+        request_id="req-triage-log-001",
+        run_id="run-triage-log-001",
+        node_name="triage",
+        event="triage.completed",
+        thread_id="thread-triage-log-001",
+    )
+    assert secret_message not in "\n".join(messages)
+
+
+@pytest.mark.asyncio
+async def test_triage_recovered_error_log_omits_exception_sentinel(caplog):
+    sentinel = "SECRET_EXCEPTION_SENTINEL"
+    operation = FakeTriageOperation(error=ModelOutputParsingError(sentinel))
+    node = make_triage_node(operation, model_name="gpt-triage-test")
+    state = GraphState(
+        request_id="req-triage-log-err",
+        run_id="run-triage-log-err",
+        thread_id="thread-triage-log-err",
+        initial_ticket=_ticket(),
+        shield_result=_allow_shield(),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="app.nodes.triage"):
+        updated = await node(state)
+
+    assert updated.workflow_outcome == "needs_human_review"
+    assert updated.additional_metadata["triage_error"]["error_type"] == "ModelOutputParsingError"
+    assert updated.additional_metadata["triage_error"]["message"] == sentinel
+
+    messages = [record.getMessage() for record in caplog.records]
+    recovered = [m for m in messages if "triage.recovered_error" in m]
+    assert recovered
+    assert_visible_correlation(
+        recovered[0],
+        request_id="req-triage-log-err",
+        run_id="run-triage-log-err",
+        node_name="triage",
+        event="triage.recovered_error",
+        thread_id="thread-triage-log-err",
+    )
+    assert "ModelOutputParsingError" in recovered[0]
+    assert "error_type" in recovered[0]
+    joined = "\n".join(messages)
+    assert sentinel not in joined
+    assert "Traceback" not in joined
+    for record in caplog.records:
+        assert record.exc_info is None

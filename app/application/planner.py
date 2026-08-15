@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
+from app.application.execution import (
+    OPERATION_PLANNER,
+    ExecutionContext,
+    LLMInvocationId,
+    LLMInvocationStarted,
+    OperationCompleted,
+    OperationFailed,
+    OperationFallback,
+    OperationStarted,
+    classify_operation_error,
+)
 from app.application.ports.llm import LLMExecutionMetadata, LLMPort
+from app.application.ports.telemetry import TelemetryPort
 from app.application.prompts import PromptIdentity, PromptRef, PromptRepository
 from app.core.exceptions import ModelOutputParsingError, UpstreamServiceError
 from app.schemas import PlanStep, ShieldOutput, SupportAgentState, SupportTicket, TriageOutput
@@ -84,41 +97,74 @@ class PlannerOperation:
         llm: LLMPort,
         prompt_repository: PromptRepository,
         prompt_ref: PromptRef,
+        telemetry: TelemetryPort,
     ) -> None:
         self._llm = llm
         self._prompt_repository = prompt_repository
         self._prompt_ref = prompt_ref
+        self._telemetry = telemetry
 
     async def execute(
         self,
         *,
+        context: ExecutionContext,
         ticket: SupportTicket,
         shield_result: ShieldOutput,
         triage_result: TriageOutput,
     ) -> PlannerOutcome:
-        resolved = self._prompt_repository.resolve(
-            self._prompt_ref,
-            variables={
-                "customer_message": ticket.customer_message,
-                "customer_metadata": ticket.customer_metadata or {},
-                "order_account_metadata": ticket.order_account_metadata or {},
-                "shield_decision": shield_result.decision,
-                "shield_risk_level": shield_result.risk_level,
-                "shield_categories": shield_result.categories,
-                "shield_should_route_to_human": shield_result.should_route_to_human,
-                "shield_reasoning": shield_result.reasoning,
-                "triage_issue_category": triage_result.issue_category,
-                "triage_intent": triage_result.intent,
-                "triage_urgency": triage_result.urgency,
-                "triage_customer_tone": triage_result.customer_tone,
-                "triage_requires_escalation": triage_result.requires_escalation,
-                "triage_requires_human_approval": triage_result.requires_human_approval,
-                "triage_reasoning_summary": triage_result.reasoning_summary,
-            },
+        started = time.perf_counter()
+        self._telemetry.emit(
+            OperationStarted(context=context, operation_name=OPERATION_PLANNER)
+        )
+
+        try:
+            resolved = self._prompt_repository.resolve(
+                self._prompt_ref,
+                variables={
+                    "customer_message": ticket.customer_message,
+                    "customer_metadata": ticket.customer_metadata or {},
+                    "order_account_metadata": ticket.order_account_metadata or {},
+                    "shield_decision": shield_result.decision,
+                    "shield_risk_level": shield_result.risk_level,
+                    "shield_categories": shield_result.categories,
+                    "shield_should_route_to_human": shield_result.should_route_to_human,
+                    "shield_reasoning": shield_result.reasoning,
+                    "triage_issue_category": triage_result.issue_category,
+                    "triage_intent": triage_result.intent,
+                    "triage_urgency": triage_result.urgency,
+                    "triage_customer_tone": triage_result.customer_tone,
+                    "triage_requires_escalation": triage_result.requires_escalation,
+                    "triage_requires_human_approval": triage_result.requires_human_approval,
+                    "triage_reasoning_summary": triage_result.reasoning_summary,
+                },
+            )
+        except Exception as exc:
+            self._telemetry.emit(
+                OperationFailed(
+                    context=context,
+                    operation_name=OPERATION_PLANNER,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                    error_category=classify_operation_error(exc),
+                    error_type=exc.__class__.__name__,
+                    invocation_id=None,
+                )
+            )
+            raise
+
+        invocation_id = LLMInvocationId.new()
+        self._telemetry.emit(
+            LLMInvocationStarted(
+                context=context,
+                operation_name=OPERATION_PLANNER,
+                invocation_id=invocation_id,
+                prompt_identity=resolved.identity,
+            )
         )
 
         try:
             result = await self._llm.generate_structured(
+                context=context,
+                invocation_id=invocation_id,
                 system_prompt=resolved.system_prompt,
                 prompt=resolved.user_prompt,
                 response_schema=SupportAgentState,
@@ -127,6 +173,13 @@ class PlannerOperation:
             if not normalized.plan:
                 raise ModelOutputParsingError("Planner returned an empty plan.")
 
+            self._telemetry.emit(
+                OperationCompleted(
+                    context=context,
+                    operation_name=OPERATION_PLANNER,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                )
+            )
             return PlannerOutcome(
                 agent_state=normalized,
                 execution=result.execution,
@@ -136,6 +189,16 @@ class PlannerOperation:
                 prompt_identity=resolved.identity,
             )
         except (ModelOutputParsingError, UpstreamServiceError) as exc:
+            self._telemetry.emit(
+                OperationFallback(
+                    context=context,
+                    operation_name=OPERATION_PLANNER,
+                    invocation_id=invocation_id,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                    error_category=classify_operation_error(exc),
+                    error_type=exc.__class__.__name__,
+                )
+            )
             return PlannerOutcome(
                 agent_state=_build_fallback_plan(),
                 execution=None,
@@ -145,6 +208,16 @@ class PlannerOperation:
                 prompt_identity=resolved.identity,
             )
         except Exception as exc:
+            self._telemetry.emit(
+                OperationFallback(
+                    context=context,
+                    operation_name=OPERATION_PLANNER,
+                    invocation_id=invocation_id,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                    error_category=classify_operation_error(exc),
+                    error_type=exc.__class__.__name__,
+                )
+            )
             return PlannerOutcome(
                 agent_state=_build_fallback_plan(),
                 execution=None,
