@@ -1,6 +1,7 @@
 # execute_plan tests (current semantics)
 
 Node tests fake `ResponseDraftingOperation` (not the OpenAI wrapper) for drafting paths.
+Successful drafting outcomes carry `PromptIdentity`; the node copies safe identity fields into metadata.
 Retrieval / human-review behavioural regressions remain intact.
 
 Covers:

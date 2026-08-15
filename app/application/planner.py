@@ -5,11 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.application.ports.llm import LLMExecutionMetadata, LLMPort
+from app.application.prompts import PromptIdentity, PromptRef, PromptRepository
 from app.core.exceptions import ModelOutputParsingError, UpstreamServiceError
-from app.prompts.planner_prompts import (
-    build_planner_system_prompt,
-    build_planner_user_prompt,
-)
 from app.schemas import PlanStep, ShieldOutput, SupportAgentState, SupportTicket, TriageOutput
 
 
@@ -20,6 +17,7 @@ class PlannerOutcome:
     fallback_used: bool
     error_type: str | None
     error_message: str | None
+    prompt_identity: PromptIdentity
 
 
 def _normalize_planner_output(agent_state: SupportAgentState) -> SupportAgentState:
@@ -81,8 +79,15 @@ def _build_fallback_plan() -> SupportAgentState:
 
 
 class PlannerOperation:
-    def __init__(self, llm: LLMPort) -> None:
+    def __init__(
+        self,
+        llm: LLMPort,
+        prompt_repository: PromptRepository,
+        prompt_ref: PromptRef,
+    ) -> None:
         self._llm = llm
+        self._prompt_repository = prompt_repository
+        self._prompt_ref = prompt_ref
 
     async def execute(
         self,
@@ -91,17 +96,31 @@ class PlannerOperation:
         shield_result: ShieldOutput,
         triage_result: TriageOutput,
     ) -> PlannerOutcome:
-        system_prompt = build_planner_system_prompt()
-        user_prompt = build_planner_user_prompt(
-            ticket=ticket,
-            shield_result=shield_result,
-            triage_result=triage_result,
+        resolved = self._prompt_repository.resolve(
+            self._prompt_ref,
+            variables={
+                "customer_message": ticket.customer_message,
+                "customer_metadata": ticket.customer_metadata or {},
+                "order_account_metadata": ticket.order_account_metadata or {},
+                "shield_decision": shield_result.decision,
+                "shield_risk_level": shield_result.risk_level,
+                "shield_categories": shield_result.categories,
+                "shield_should_route_to_human": shield_result.should_route_to_human,
+                "shield_reasoning": shield_result.reasoning,
+                "triage_issue_category": triage_result.issue_category,
+                "triage_intent": triage_result.intent,
+                "triage_urgency": triage_result.urgency,
+                "triage_customer_tone": triage_result.customer_tone,
+                "triage_requires_escalation": triage_result.requires_escalation,
+                "triage_requires_human_approval": triage_result.requires_human_approval,
+                "triage_reasoning_summary": triage_result.reasoning_summary,
+            },
         )
 
         try:
             result = await self._llm.generate_structured(
-                system_prompt=system_prompt,
-                prompt=user_prompt,
+                system_prompt=resolved.system_prompt,
+                prompt=resolved.user_prompt,
                 response_schema=SupportAgentState,
             )
             normalized = _normalize_planner_output(result.parsed)
@@ -114,6 +133,7 @@ class PlannerOperation:
                 fallback_used=False,
                 error_type=None,
                 error_message=None,
+                prompt_identity=resolved.identity,
             )
         except (ModelOutputParsingError, UpstreamServiceError) as exc:
             return PlannerOutcome(
@@ -122,6 +142,7 @@ class PlannerOperation:
                 fallback_used=True,
                 error_type=exc.__class__.__name__,
                 error_message=str(exc),
+                prompt_identity=resolved.identity,
             )
         except Exception as exc:
             return PlannerOutcome(
@@ -130,4 +151,5 @@ class PlannerOperation:
                 fallback_used=True,
                 error_type=exc.__class__.__name__,
                 error_message=str(exc),
+                prompt_identity=resolved.identity,
             )

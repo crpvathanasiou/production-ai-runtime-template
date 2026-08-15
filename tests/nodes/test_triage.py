@@ -4,18 +4,25 @@ from __future__ import annotations
 
 import pytest
 
-from app.application.ports.llm import LLMExecutionMetadata, StructuredLLMResult
+from app.application.ports.llm import LLMExecutionMetadata
+from app.application.prompts import PromptIdentity, PromptRef
+from app.application.triage import TriageOutcome
 from app.core.exceptions import ModelOutputParsingError, UpstreamServiceError
 from app.graph_state import GraphState
 from app.nodes.triage import make_triage_node
 from app.schemas import ShieldOutput, SupportTicket, TriageOutput
+
+_PROMPT_IDENTITY = PromptIdentity(
+    ref=PromptRef(prompt_id="triage", revision=1),
+    content_hash="triage-hash",
+)
 
 
 class FakeTriageOperation:
     def __init__(
         self,
         *,
-        result: StructuredLLMResult[TriageOutput] | None = None,
+        result: TriageOutcome | None = None,
         error: Exception | None = None,
     ) -> None:
         self._result = result
@@ -27,7 +34,7 @@ class FakeTriageOperation:
         *,
         ticket: SupportTicket,
         shield_result: ShieldOutput,
-    ) -> StructuredLLMResult[TriageOutput]:
+    ) -> TriageOutcome:
         self.calls.append({"ticket": ticket, "shield_result": shield_result})
         if self._error is not None:
             raise self._error
@@ -72,14 +79,17 @@ def _triage(
     )
 
 
+def _outcome(parsed: TriageOutput, *, latency_ms: float = 1.0) -> TriageOutcome:
+    return TriageOutcome(
+        output=parsed,
+        execution=LLMExecutionMetadata(latency_ms=latency_ms, attempts=1),
+        prompt_identity=_PROMPT_IDENTITY,
+    )
+
+
 @pytest.mark.asyncio
 async def test_triage_node_missing_shield_blocked():
-    operation = FakeTriageOperation(
-        result=StructuredLLMResult(
-            parsed=_triage(),
-            execution=LLMExecutionMetadata(latency_ms=1.0, attempts=1),
-        )
-    )
+    operation = FakeTriageOperation(result=_outcome(_triage()))
     node = make_triage_node(operation, model_name="gpt-triage-test")
     state = GraphState(request_id="req-triage-001", initial_ticket=_ticket())
 
@@ -92,12 +102,7 @@ async def test_triage_node_missing_shield_blocked():
 
 @pytest.mark.asyncio
 async def test_triage_node_skipped_when_shield_blocked():
-    operation = FakeTriageOperation(
-        result=StructuredLLMResult(
-            parsed=_triage(),
-            execution=LLMExecutionMetadata(latency_ms=1.0, attempts=1),
-        )
-    )
+    operation = FakeTriageOperation(result=_outcome(_triage()))
     node = make_triage_node(operation, model_name="gpt-triage-test")
     state = GraphState(
         request_id="req-triage-002",
@@ -123,12 +128,7 @@ async def test_triage_node_skipped_when_shield_blocked():
 @pytest.mark.asyncio
 async def test_triage_node_success_running():
     parsed = _triage()
-    operation = FakeTriageOperation(
-        result=StructuredLLMResult(
-            parsed=parsed,
-            execution=LLMExecutionMetadata(latency_ms=33.0, attempts=1),
-        )
-    )
+    operation = FakeTriageOperation(result=_outcome(parsed, latency_ms=33.0))
     node = make_triage_node(operation, model_name="gpt-triage-test")
     state = GraphState(
         request_id="req-triage-003",
@@ -146,18 +146,18 @@ async def test_triage_node_success_running():
     assert meta["attempts"] == 1
     assert meta["issue_category"] == "refund"
     assert meta["requires_escalation"] is False
+    assert meta["prompt_id"] == "triage"
+    assert meta["prompt_revision"] == 1
+    assert meta["prompt_content_hash"] == "triage-hash"
+    assert "system_prompt" not in meta
+    assert "user_prompt" not in meta
     assert len(operation.calls) == 1
 
 
 @pytest.mark.asyncio
 async def test_triage_node_success_needs_human_review():
     parsed = _triage(requires_escalation=True)
-    operation = FakeTriageOperation(
-        result=StructuredLLMResult(
-            parsed=parsed,
-            execution=LLMExecutionMetadata(latency_ms=10.0, attempts=1),
-        )
-    )
+    operation = FakeTriageOperation(result=_outcome(parsed, latency_ms=10.0))
     node = make_triage_node(operation, model_name="gpt-triage-test")
     state = GraphState(
         request_id="req-triage-004",
@@ -170,6 +170,10 @@ async def test_triage_node_success_needs_human_review():
     assert updated.workflow_outcome == "needs_human_review"
     assert updated.triage_result is not None
     assert updated.triage_result.requires_escalation is True
+    meta = updated.additional_metadata["triage"]
+    assert meta["prompt_id"] == "triage"
+    assert meta["prompt_revision"] == 1
+    assert meta["prompt_content_hash"] == "triage-hash"
 
 
 @pytest.mark.asyncio
@@ -189,6 +193,9 @@ async def test_triage_node_parsing_failure_needs_human_review():
     assert err["error_type"] == "ModelOutputParsingError"
     assert err["message"] == "bad parse"
     assert "latency_ms" in err
+    assert "prompt_id" not in err
+    assert "prompt_revision" not in err
+    assert "prompt_content_hash" not in err
 
 
 @pytest.mark.asyncio
@@ -205,3 +212,5 @@ async def test_triage_node_upstream_failure_needs_human_review():
 
     assert updated.workflow_outcome == "needs_human_review"
     assert updated.additional_metadata["triage_error"]["error_type"] == "UpstreamServiceError"
+    err = updated.additional_metadata["triage_error"]
+    assert "prompt_id" not in err

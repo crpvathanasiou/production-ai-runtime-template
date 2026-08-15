@@ -1,7 +1,7 @@
 Ναι. Ο πιο καθαρός τρόπος να το δεις είναι ότι ο **input_shield agent** δεν είναι “ένα prompt”.
 Είναι ένα **μικρό subsystem** με ownership split μεταξύ LangGraph node και Application Operation.
 
-## Current architecture (M1)
+## Current architecture (M2)
 
 ```text
 make_input_shield_node(...)
@@ -9,6 +9,10 @@ make_input_shield_node(...)
 LangGraph input-shield node
         ↓
 InputShieldOperation
+        ↓
+PromptRepository.resolve(input-shield@1)
+        ↓
+ResolvedPrompt
         ↓
 LLMPort
         ↓
@@ -18,11 +22,12 @@ AsyncOpenAIWrapper
 **InputShieldOperation owns:**
 
 - deterministic fail-fast invocation
-- prompt builder invocation
+- explicit `PromptRef` resolution via `PromptRepository`
 - exact logical-prompt max-length check (combined logical prompt **strict >** `max_prompt_chars` → provider call prevented on block)
 - LLM structured call via `LLMPort`
 - normalization
 - expected LLM-failure cautious fallback
+- `PromptIdentity` on outcomes where a prompt was resolved
 
 **Node owns:**
 
@@ -30,9 +35,9 @@ AsyncOpenAIWrapper
 - `request_id`
 - node timing/logging
 - `workflow_outcome`
-- `additional_metadata` mapping
+- `additional_metadata` mapping (copies safe prompt identity when present; does **not** resolve prompts)
 
-`BaseGuardrail` / `MaxPromptLengthGuardrail` / `ShieldOutputNotEmptyGuardrail` remain wrapper-level concepts where used by the adapter; they did **not** move into Application Core. Synthetic successful `guardrail_notes` are **not** a required node-metadata result after M1.
+`BaseGuardrail` / `MaxPromptLengthGuardrail` / `ShieldOutputNotEmptyGuardrail` remain wrapper-level concepts where used by the adapter; they did **not** move into Application Core. Synthetic successful `guardrail_notes` are **not** a required node-metadata result.
 
 ## Σχηματικά
 
@@ -50,12 +55,13 @@ Incoming Ticket
      │       - obvious privacy risk
      │       - obvious prompt injection
      │
-     ├── 2. prompt building
-     │       - system prompt
-     │       - user prompt
+     ├── 2. prompt resolution (only if fail-fast did not decide)
+     │       - PromptRepository.resolve(input-shield@1)
+     │       - ResolvedPrompt (system + user; content_hash of static definition)
      │
      ├── 3. logical-prompt max-length policy
      │       - strict > max_prompt_chars blocks before provider call
+     │       - prompt identity still present (prompt was resolved)
      │
      ├── 4. LLMPort → AsyncOpenAIWrapper
      │       - strict structured call
@@ -67,12 +73,21 @@ Incoming Ticket
      └── 6. normalization / expected-failure fallback
              - fix inconsistent model outputs
              - harden decisions
+             - prompt identity present on LLM success and handled llm_failure_fallback
 
      node then maps InputShieldOutcome →
              - state.shield_result
              - state.workflow_outcome
              - state.additional_metadata
+               (safe prompt_id / prompt_revision / prompt_content_hash when identity exists)
 ```
+
+Prompt identity semantics:
+
+* heuristic_fail_fast → no prompt resolved → no prompt identity
+* prompt_length_block → prompt resolved → identity present
+* llm success → identity present
+* handled llm_failure_fallback → identity present
 
 ---
 
@@ -119,23 +134,22 @@ Incoming Ticket
 
 ## 3. Prompt layer
 
-Αυτό είναι το αρχείο:
+Immutable code-backed V1 definition:
 
-* `input_shield_prompts.py`
+* `input_shield_prompts.py` → `INPUT_SHIELD_PROMPT_V1` (`input-shield@1`)
+* one revision owns the complete system template + user template bundle
+* resolved through application-owned `PromptRepository` (`LocalPromptRepository` in composition)
 
-Έχεις δύο κομμάτια:
-
-* `build_input_shield_system_prompt()`
-* `build_input_shield_user_prompt(ticket)`
+`content_hash` identifies the stored static templates, not runtime customer/domain values.
 
 ### Ρόλος
 
 Να χωρίσεις:
 
-* **policy / behavior instructions**
-* από το **runtime input**
+* **policy / behavior instructions** (immutable revision)
+* από το **runtime input** (variables supplied by the Application Operation)
 
-Invocation ownership: `InputShieldOperation` (όχι το LangGraph node).
+Resolution ownership: `InputShieldOperation` via `PromptRepository` (όχι το LangGraph node).
 
 ---
 
@@ -143,14 +157,15 @@ Invocation ownership: `InputShieldOperation` (όχι το LangGraph node).
 
 Path:
 
-* `InputShieldOperation` → `LLMPort` → `AsyncOpenAIWrapper`
+* `InputShieldOperation` → `PromptRepository` → `ResolvedPrompt` → `LLMPort` → `AsyncOpenAIWrapper`
 
 ### Ρόλος
 
-* Application Operation: prompt invocation, max-prompt policy, normalization/fallback
+* Application Operation: PromptRef resolution, max-prompt policy, normalization/fallback, PromptIdentity
+* `LLMPort`: receives only rendered `system_prompt` / `prompt` / `response_schema` (prompt-lifecycle neutral)
 * `AsyncOpenAIWrapper`: outbound OpenAI adapter (retries, timeout, provider parsing)
 
-Ο node **δεν** κατασκευάζει / καλεί απευθείας τον OpenAI wrapper.
+Ο node **δεν** κατασκευάζει / καλεί απευθείας τον OpenAI wrapper και **δεν** κάνει prompt resolution.
 
 ---
 
@@ -264,10 +279,10 @@ Expected LLM-failure cautious fallback is owned by `InputShieldOperation`.
 
 * regex / heuristics / sanitization
 
-## Layer 3 — Prompting
+## Layer 3 — Prompt identity / resolution
 
-* system prompt
-* user prompt
+* immutable `PromptDefinition` (`input-shield@1`)
+* `PromptRepository` → `ResolvedPrompt`
 
 ## Layer 4 — Application Operation + LLMPort
 
@@ -282,7 +297,7 @@ Expected LLM-failure cautious fallback is owned by `InputShieldOperation`.
 ## Layer 6 — Runtime operations
 
 * logging
-* metadata
+* metadata (safe prompt identity when present)
 * exceptions
 * retries / timeouts (adapter)
 
@@ -294,7 +309,7 @@ Expected LLM-failure cautious fallback is owned by `InputShieldOperation`.
 
 1. **schema contract**
 2. **heuristic guardrails**
-3. **prompts**
+3. **immutable PromptDefinition + PromptRepository**
 4. **InputShieldOperation + LLMPort + OpenAI adapter**
 5. **node orchestration logic** (GraphState mapping)
 
@@ -304,7 +319,7 @@ Expected LLM-failure cautious fallback is owned by `InputShieldOperation`.
 
 Αν το περιγράψεις σε συνέντευξη ή documentation:
 
-> The input shield agent is a LangGraph orchestration node that invokes `InputShieldOperation`. The operation owns deterministic pre-checks, prompt invocation, exact logical-prompt max-length policy, structured LLM classification via `LLMPort`, normalization, and expected-failure fallback. The node owns GraphState mapping, `request_id`, timing/logging, and `workflow_outcome`.
+> The input shield agent is a LangGraph orchestration node that invokes `InputShieldOperation`. The operation owns deterministic pre-checks, immutable PromptRef resolution, exact logical-prompt max-length policy, structured LLM classification via `LLMPort`, normalization, and expected-failure fallback. The node owns GraphState mapping, `request_id`, timing/logging, `workflow_outcome`, and safe prompt-identity metadata when an outcome carries identity.
 
 Αυτό είναι πολύ σωστή περιγραφή.
 
@@ -324,8 +339,14 @@ input_guardrails.py
  └── build_fail_fast_shield_output
 
 input_shield_prompts.py
- ├── build_input_shield_system_prompt
- └── build_input_shield_user_prompt
+ └── INPUT_SHIELD_PROMPT_V1  (immutable PromptDefinition, input-shield@1)
+
+app/application/prompts/
+ ├── PromptRef / PromptIdentity / ResolvedPrompt
+ └── PromptRepository
+
+app/prompts/local_repository.py
+ └── LocalPromptRepository
 
 app/application/input_shield.py
  └── InputShieldOperation
@@ -355,16 +376,19 @@ input_shield_node
 InputShieldOperation
         │
         ├── early return if obvious fail-fast case
+        │      (no prompt resolution / no identity)
         ▼
-prompt builders + max-prompt policy
+PromptRepository.resolve(input-shield@1) → ResolvedPrompt
+        ▼
+exact logical-prompt max-length policy
         ▼
 LLMPort → AsyncOpenAIWrapper
         ▼
-ShieldOutput + normalization / fallback
+ShieldOutput + normalization / fallback (+ PromptIdentity)
         ▼
 node maps → GraphState.shield_result
         ▼
-workflow_outcome + metadata + logs
+workflow_outcome + metadata (+ safe prompt identity) + logs
 ```
 
 -------------------------------------------------------------------
@@ -389,15 +413,15 @@ input_shield_node(state)
     |-- invokes --> InputShieldOperation.execute(...)
     |                 |
     |                 |-- build_fail_fast_shield_output(ticket)
-    |                 |-- (else) prompt builders
+    |                 |-- (else) PromptRepository.resolve(input-shield@1)
     |                 |-- exact logical-prompt max-length check
     |                 |-- LLMPort → AsyncOpenAIWrapper.generate_structured(...)
     |                 |-- normalize / expected-failure fallback
-    |                 '-- returns --> InputShieldOutcome
+    |                 '-- returns --> InputShieldOutcome (+ PromptIdentity when resolved)
     |
     |-- writes --> state.shield_result
     |-- writes --> state.workflow_outcome
-    |-- writes --> state.additional_metadata
+    |-- writes --> state.additional_metadata  (safe prompt identity when present)
     '-- returns --> updated state
 ```
 
@@ -432,14 +456,16 @@ input_shield_node(state)
                  ┌──────────────────────────────┐
                  │    InputShieldOperation      │
                  │------------------------------│
-                 │ fail-fast / prompts / policy │
-                 │ LLMPort call / normalize     │
+                 │ fail-fast / PromptRef resolve│
+                 │ max-prompt / LLMPort / norm  │
                  └───┬──────────────────┬───────┘
                      │                  │
                      v                  v
          ┌─────────────────────┐   ┌──────────────────────────┐
-         │ input_guardrails.py │   │ input_shield_prompts.py  │
-         └─────────────────────┘   └───────────┬──────────────┘
+         │ input_guardrails.py │   │ PromptRepository         │
+         └─────────────────────┘   │ → ResolvedPrompt         │
+                                   │ (input-shield@1)         │
+                                   └───────────┬──────────────┘
                                                │
                                                v
                                     ┌──────────────────────────┐
@@ -455,11 +481,11 @@ input_shield_node(state)
 
 ### Sequence version
 
-> The input shield node reads GraphState, invokes `InputShieldOperation`, maps the outcome into `shield_result` / `workflow_outcome` / metadata, and returns. The operation owns fail-fast checks, prompts, max-prompt policy, `LLMPort` classification, and normalization/fallback.
+> The input shield node reads GraphState, invokes `InputShieldOperation`, maps the outcome into `shield_result` / `workflow_outcome` / metadata (including safe prompt identity when present), and returns. The operation owns fail-fast checks, immutable PromptRef resolution, max-prompt policy, `LLMPort` classification, and normalization/fallback.
 
 ### Component version
 
-> The input shield agent consists of a schema contract, heuristic guardrails, prompt builders, `InputShieldOperation` behind `LLMPort`/`AsyncOpenAIWrapper`, and a LangGraph node that owns GraphState orchestration.
+> The input shield agent consists of a schema contract, heuristic guardrails, an immutable V1 PromptDefinition resolved through `PromptRepository`, `InputShieldOperation` behind `LLMPort`/`AsyncOpenAIWrapper`, and a LangGraph node that owns GraphState orchestration.
 
 ---
 

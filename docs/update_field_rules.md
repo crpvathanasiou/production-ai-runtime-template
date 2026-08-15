@@ -8,13 +8,14 @@
     - additional_metadata["input_shield"]
   update rules:
     - αν το input είναι empty / non-actionable / clearly unsafe, γράφει shield_result με decision "block" ή "needs_clarification"
-    - αν περάσει fail-fast checks, το node καλεί InputShieldOperation (→ LLMPort → adapter) και mapάρει structured ShieldOutput στο state
+    - αν περάσει fail-fast checks, το node καλεί InputShieldOperation· η operation κάνει PromptRepository.resolve → ResolvedPrompt → LLMPort → adapter και mapάρει structured ShieldOutput στο state
     - workflow_outcome:
         - "blocked" όταν decision == "block"
         - "blocked" όταν decision == "needs_clarification"
         - "needs_human_review" όταν should_route_to_human == True
         - "running" όταν το input μπορεί να συνεχίσει κανονικά
     - γράφει metadata για model / latency / attempts / decision / errors (όχι synthetic successful guardrail_notes ως required result)
+    - όταν υπάρχει operation outcome με PromptIdentity, το node αντιγράφει μόνο safe identity fields (prompt_id / prompt_revision / prompt_content_hash)· fail-fast χωρίς resolution δεν έχει identity
 
 # triage_node
   input:
@@ -27,13 +28,13 @@
     - additional_metadata["triage"]
   update rules:
     - τρέχει μόνο αφού υπάρχει shield_result που επιτρέπει συνέχεια
-    - το node καλεί TriageOperation (→ LLMPort → adapter) και mapάρει structured TriageOutput στο state
+    - το node καλεί TriageOperation· η operation κάνει PromptRepository.resolve → ResolvedPrompt → LLMPort → adapter και mapάρει structured TriageOutput στο state
     - workflow_outcome:
         - συνήθως "running" όταν το triage ολοκληρωθεί σωστά
         - "needs_human_review" μόνο αν έχεις ορίσει fallback/recovery path σε error
         - "blocked" αν λείπει απαραίτητο upstream input
-    - γράφει metadata για model / latency / attempts / triage result
-    - σε recoverable failure μπορεί να γράψει triage_error metadata
+    - γράφει metadata για model / latency / attempts / triage result + safe prompt identity όταν υπάρχει outcome
+    - σε recoverable failure μπορεί να γράψει triage_error metadata (χωρίς prompt identity αν δεν επιστράφηκε outcome)
 
 # planner_node
   input:
@@ -48,7 +49,7 @@
     - additional_metadata["planner"]
   update rules:
     - απαιτεί shield_result και triage_result
-    - το node καλεί PlannerOperation (→ LLMPort → adapter)· η operation παράγει/normalizes structured SupportAgentState (και fallback σε recoverable failure)
+    - το node καλεί PlannerOperation· η operation κάνει PromptRepository.resolve → ResolvedPrompt → LLMPort → adapter· παράγει/normalizes structured SupportAgentState (και fallback σε recoverable failure)
     - normalization (owned by PlannerOperation):
         - όλα τα plan steps ξεκινούν ως "pending"
         - current_step_id γίνεται το πρώτο step αν λείπει
@@ -58,7 +59,7 @@
         - "blocked" αν λείπει shield_result ή triage_result
         - "needs_human_review" αν αποτύχει το planner και χρησιμοποιηθεί fallback plan
     - σε failure γράφει fallback plan αντί να σπάει όλο το workflow
-    - γράφει metadata για model / latency / attempts / plan_length / current_step_id
+    - γράφει metadata για model / latency / attempts / plan_length / current_step_id + safe prompt identity σε normal και handled fallback outcomes
 
 # execute_plan_node
   input:
@@ -93,12 +94,13 @@
             - δεν θεωρείται successful retrieval
         - σε exception αλλάζει το step status σε "failed"
     - για κάθε response_agent step:
-        - το node orchestrates το PlanStep και καλεί ResponseDraftingOperation (→ LLMPort → adapter)
+        - το node orchestrates το PlanStep και καλεί ResponseDraftingOperation· η operation κάνει PromptRepository.resolve → ResolvedPrompt → LLMPort → adapter
         - mapάρει το draft στο response_draft
         - με retrieved evidence: result = "Drafted grounded customer response."
         - χωρίς retrieved evidence: result = "Drafted customer response without retrieved context."
         - αλλάζει το step status σε "completed"
         - σε exception αλλάζει το step status σε "failed"
+        - όταν υπάρχει drafting outcome, αντιγράφει safe prompt identity στα response_drafting metadata
     - για κάθε human step:
         - το αφήνει "pending"
         - δεν το εκτελεί εδώ

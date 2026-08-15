@@ -3,11 +3,11 @@ from typing import Protocol
 
 from langsmith import traceable
 
-from app.application.ports.llm import StructuredLLMResult
+from app.application.triage import TriageOutcome
 from app.core.exceptions import ModelOutputParsingError, UpstreamServiceError
 from app.core.logging import bind_log_context, get_logger
 from app.graph_state import GraphState
-from app.schemas import ShieldOutput, SupportTicket, TriageOutput
+from app.schemas import ShieldOutput, SupportTicket
 
 logger = get_logger(__name__)
 
@@ -18,7 +18,7 @@ class SupportsTriageExecute(Protocol):
         *,
         ticket: SupportTicket,
         shield_result: ShieldOutput,
-    ) -> StructuredLLMResult[TriageOutput]: ...
+    ) -> TriageOutcome: ...
 
 
 def make_triage_node(
@@ -61,12 +61,12 @@ def make_triage_node(
             return state
 
         try:
-            result = await operation.execute(
+            outcome = await operation.execute(
                 ticket=state.initial_ticket,
                 shield_result=state.shield_result,
             )
 
-            parsed = result.parsed
+            parsed = outcome.output
             state.triage_result = parsed
 
             if parsed.requires_human_approval or parsed.requires_escalation:
@@ -77,13 +77,16 @@ def make_triage_node(
             state.additional_metadata["triage"] = {
                 "request_id": request_id,
                 "model_name": model_name,
-                "latency_ms": result.execution.latency_ms,
-                "attempts": result.execution.attempts,
+                "latency_ms": outcome.execution.latency_ms,
+                "attempts": outcome.execution.attempts,
                 "issue_category": parsed.issue_category,
                 "intent": parsed.intent,
                 "urgency": parsed.urgency,
                 "requires_escalation": parsed.requires_escalation,
                 "requires_human_approval": parsed.requires_human_approval,
+                "prompt_id": outcome.prompt_identity.ref.prompt_id,
+                "prompt_revision": outcome.prompt_identity.ref.revision,
+                "prompt_content_hash": outcome.prompt_identity.content_hash,
             }
 
             logger.info(
@@ -92,8 +95,8 @@ def make_triage_node(
                     request_id=request_id,
                     node_name="triage",
                     model_name=model_name,
-                    latency_ms=result.execution.latency_ms,
-                    attempts=result.execution.attempts,
+                    latency_ms=outcome.execution.latency_ms,
+                    attempts=outcome.execution.attempts,
                     issue_category=parsed.issue_category,
                     intent=parsed.intent,
                     urgency=parsed.urgency,

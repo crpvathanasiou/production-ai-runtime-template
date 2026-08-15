@@ -1,6 +1,6 @@
 # production-ai-runtime-template
 
-Reusable **production-oriented AI runtime template** in preparation. Governance and architecture documentation live under [`.ai/`](.ai/README.md). The Python tree still contains a **seeded Customer Support Triage** example; that seed is useful code and now includes the M1 Application LLM Execution Boundary for active LLM paths. Later readiness capabilities (Prompt Identity, ExecutionContext, Telemetry, and others) remain unimplemented — see [`.ai/architecture/template-readiness.md`](.ai/architecture/template-readiness.md).
+Reusable **production-oriented AI runtime template** in preparation. Governance and architecture documentation live under [`.ai/`](.ai/README.md). The Python tree still contains a **seeded Customer Support Triage** example; that seed is useful code and now includes the M1 Application LLM Execution Boundary plus M2 Prompt Identity / Immutable Prompt Resolution for active LLM paths. Later readiness capabilities (`ExecutionContext`, Telemetry, and others) remain unimplemented — see [`.ai/architecture/template-readiness.md`](.ai/architecture/template-readiness.md).
 
 This repository is no longer the `fastapi-prod-starter` sample. Docker Compose service names in `docker-compose.yaml` may still reflect that older identity; renaming them is an infrastructure change, not a documentation correction.
 
@@ -25,11 +25,15 @@ Active LLM paths now use:
 ```text
 LangGraph Node
   → Application Operation
+  → PromptRef / PromptRepository
+  → ResolvedPrompt
   → LLMPort
-  → AsyncOpenAIWrapper / OpenAI
+  → OpenAI Adapter
 ```
 
-Explicit production composition lives in `app/composition.py` (`build_runtime_graph()`). `scripts/run_graph_once.py` uses that composed runtime graph. LangGraph remains optional in the target architecture even though it is the active seeded orchestration example. Prompt Identity, ExecutionContext, and Telemetry remain later readiness gaps.
+Prompt revisions are local, code-backed, and immutable (`input-shield@1`, `triage@1`, `planner@1`, `response-drafting@1`) with explicit prompt identity (`prompt_id`, `revision`, `content_hash`). No prompt-management platform is required for the baseline.
+
+Explicit production composition lives in `app/composition.py` (`build_runtime_graph()`). `scripts/run_graph_once.py` uses that composed runtime graph. LangGraph remains optional in the target architecture even though it is the active seeded orchestration example. `ExecutionContext` and Telemetry remain later readiness gaps.
 
 Authoritative detail: [`.ai/architecture/architecture.md`](.ai/architecture/architecture.md) and [`.ai/architecture/file-map.md`](.ai/architecture/file-map.md). Optional Redis is used only for a health-check ping when `REDIS_URL` is set.
 

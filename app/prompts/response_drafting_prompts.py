@@ -1,8 +1,13 @@
-from app.schemas import RetrievedDocument, SupportTicket, TriageOutput
+"""Immutable code-backed Response Drafting prompt definitions."""
 
+from __future__ import annotations
 
-def build_response_drafting_system_prompt() -> str:
-    return """
+from app.application.prompts import PromptRef
+from app.prompts.local_repository import PromptDefinition
+
+RESPONSE_DRAFTING_PROMPT_V1 = PromptDefinition(
+    ref=PromptRef(prompt_id="response-drafting", revision=1),
+    system_template="""
 You are a customer support response drafting assistant.
 
 Your job is to draft a customer response using the provided support context.
@@ -31,37 +36,8 @@ When retrieved documents are NOT provided:
 - Where verified policy knowledge would be required, acknowledge the limitation rather than inventing an answer.
 
 Return only structured output matching the schema.
-""".strip()
-
-
-def build_response_drafting_user_prompt(
-    *,
-    ticket: SupportTicket,
-    triage_result: TriageOutput,
-    retrieved_documents: list[RetrievedDocument],
-) -> str:
-    if retrieved_documents:
-        docs_text = "\n\n".join(
-            [
-                f"[Source: {doc.source}]\n{doc.content}"
-                for doc in retrieved_documents
-            ]
-        )
-        retrieval_mode = (
-            "Retrieved support context is available below. "
-            "Use it for external/policy grounding. "
-            "Populate related_documents only from these exact documents."
-        )
-    else:
-        docs_text = "No retrieved documents available."
-        retrieval_mode = (
-            "No retrieved documents are available for this run. "
-            "Return related_documents as an empty list. "
-            "Do not invent documents or claim corpus grounding. "
-            "Draft a cautious response from ticket and triage context only."
-        )
-
-    return f"""
+""".strip(),
+    user_template="""
 Draft a customer support response for this case.
 
 Retrieval mode:
@@ -69,20 +45,21 @@ Retrieval mode:
 
 Customer message:
 <<<CUSTOMER_MESSAGE>>>
-{ticket.customer_message}
+{customer_message}
 <<<END_CUSTOMER_MESSAGE>>>
 
 Triage result:
-- issue_category: {triage_result.issue_category}
-- intent: {triage_result.intent}
-- urgency: {triage_result.urgency}
-- customer_tone: {triage_result.customer_tone}
-- requires_escalation: {triage_result.requires_escalation}
-- requires_human_approval: {triage_result.requires_human_approval}
-- reasoning_summary: {triage_result.reasoning_summary}
+- issue_category: {triage_issue_category}
+- intent: {triage_intent}
+- urgency: {triage_urgency}
+- customer_tone: {triage_customer_tone}
+- requires_escalation: {triage_requires_escalation}
+- requires_human_approval: {triage_requires_human_approval}
+- reasoning_summary: {triage_reasoning_summary}
 
 Retrieved support context:
 {docs_text}
 
 Return a structured response draft.
-""".strip()
+""".strip(),
+)

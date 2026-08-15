@@ -96,8 +96,9 @@ workflow_outcome ∈ {
   * γράφει `shield_result.decision = "block"` ή `"needs_clarification"`
 * αν περάσει τα deterministic checks:
 
-  * το node καλεί `InputShieldOperation` (→ `LLMPort` → adapter)
+  * το node καλεί `InputShieldOperation`· η operation κάνει `PromptRepository.resolve` → `ResolvedPrompt` → `LLMPort` → adapter
   * mapάρει structured `ShieldOutput` / `InputShieldOutcome` στο GraphState
+  * όταν υπάρχει `PromptIdentity`, το node αντιγράφει μόνο safe identity fields στα metadata
 * `workflow_outcome`:
 
   * `blocked` όταν `decision == "block"`
@@ -123,12 +124,13 @@ workflow_outcome ∈ {
 
 ### Ownership boundary
 
-* το node: orchestration prerequisites, GraphState mapping, `request_id`/logging/`workflow_outcome`
-* η `InputShieldOperation`: fail-fast, prompts, max-prompt policy, LLMPort call, normalization/fallback
+* το node: orchestration prerequisites, GraphState mapping, `request_id`/logging/`workflow_outcome`, safe prompt-identity metadata copy
+* η `InputShieldOperation`: fail-fast, immutable PromptRef resolution, max-prompt policy, LLMPort call, normalization/fallback
 * **δεν** κάνει triage
 * **δεν** φτιάχνει execution plan
 * **δεν** παράγει customer response
 * **δεν** καλεί απευθείας OpenAI / δεν κατασκευάζει provider
+* **δεν** κάνει prompt resolution στο node
 
 ---
 
@@ -160,7 +162,7 @@ workflow_outcome ∈ {
 ### Update rules
 
 * το node επικυρώνει orchestration prerequisites
-* καλεί `TriageOperation` (→ `LLMPort` → adapter)
+* καλεί `TriageOperation`· η operation κάνει `PromptRepository.resolve` → `ResolvedPrompt` → `LLMPort` → adapter
 * mapάρει result/failure σε GraphState / `workflow_outcome`
 * `workflow_outcome`:
 
@@ -185,12 +187,13 @@ workflow_outcome ∈ {
 
 ### Ownership boundary
 
-* το node: prerequisites, GraphState/`workflow_outcome` mapping, metadata
-* η `TriageOperation`: triage LLM use-case / prompt invocation via `LLMPort`
+* το node: prerequisites, GraphState/`workflow_outcome` mapping, metadata (safe prompt identity όταν υπάρχει outcome)
+* η `TriageOperation`: triage LLM use-case / immutable PromptRef resolution via `PromptRepository` / `LLMPort`
 * **δεν** κάνει retrieval
 * **δεν** γράφει response draft
 * **δεν** φτιάχνει plan execution artifacts
 * **δεν** καλεί απευθείας OpenAI / δεν κατασκευάζει provider
+* **δεν** κάνει prompt resolution στο node
 
 ---
 
@@ -224,7 +227,7 @@ workflow_outcome ∈ {
 ### Update rules
 
 * το node επικυρώνει prerequisites
-* καλεί `PlannerOperation` (→ `LLMPort` → adapter)
+* καλεί `PlannerOperation`· η operation κάνει `PromptRepository.resolve` → `ResolvedPrompt` → `LLMPort` → adapter
 * η operation παράγει structured `SupportAgentState`, κάνει normalization, και (σε recoverable failure) fallback plan
 * το node mapάρει normal/fallback `PlannerOutcome` στο GraphState / `workflow_outcome`
 * normalization (operation-owned):
@@ -256,13 +259,14 @@ workflow_outcome ∈ {
 
 ### Ownership boundary
 
-* το node: prerequisites, GraphState/`workflow_outcome` mapping, metadata
-* η `PlannerOperation`: plan generation, normalization, fallback via `LLMPort`
+* το node: prerequisites, GraphState/`workflow_outcome` mapping, metadata (safe prompt identity σε normal/fallback outcomes)
+* η `PlannerOperation`: immutable PromptRef resolution, plan generation, normalization, fallback via `LLMPort`
 * αποφασίζει **τι πρέπει να γίνει** (plan semantics)
 * **δεν** κάνει retrieval
 * **δεν** συντάσσει response
 * **δεν** κάνει semantic validation
 * **δεν** καλεί απευθείας OpenAI / δεν κατασκευάζει provider
+* **δεν** κάνει prompt resolution στο node
 
 ---
 
@@ -312,12 +316,13 @@ workflow_outcome ∈ {
 * για `response_agent` step:
 
   * orchestrates το PlanStep
-  * delegates drafting generation σε `ResponseDraftingOperation` (→ `LLMPort` → adapter)
+  * delegates drafting generation σε `ResponseDraftingOperation` (`PromptRepository.resolve` → `ResolvedPrompt` → `LLMPort` → adapter)
   * mapάρει `response_draft`
   * με retrieved evidence → grounded result
   * χωρίς retrieved evidence → cautious non-corpus-grounded result
   * step → `completed`
   * σε exception → `failed`
+  * όταν υπάρχει drafting outcome, αντιγράφει safe prompt identity στα metadata
 * για `human` step:
 
   * το αφήνει `pending` (δεν εκτελείται από execute_plan)
@@ -350,12 +355,13 @@ workflow_outcome ∈ {
 ### Ownership boundary
 
 * εκτελεί το plan (PlanStep orchestration)
-* retrieval-shaped execution: current seeded placement; unchanged by M1
-* drafting generation delegated to `ResponseDraftingOperation`
+* retrieval-shaped execution: current seeded placement
+* drafting generation delegated to `ResponseDraftingOperation` (immutable PromptRef resolution owned by the operation)
 * **δεν** αποφασίζει policy correctness
 * **δεν** κάνει human review
 * **δεν** κλείνει το workflow
 * **δεν** καλεί απευθείας OpenAI για drafting / δεν κατασκευάζει provider
+* **δεν** κάνει prompt resolution στο node
 
 ---
 

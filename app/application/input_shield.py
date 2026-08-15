@@ -6,14 +6,11 @@ from dataclasses import dataclass
 from typing import Literal
 
 from app.application.ports.llm import LLMExecutionMetadata, LLMPort
+from app.application.prompts import PromptIdentity, PromptRef, PromptRepository
 from app.core.exceptions import ModelOutputParsingError, UpstreamServiceError
 from app.guardrails.input_guardrails import (
     build_fail_fast_shield_output,
     sanitize_message,
-)
-from app.prompts.input_shield_prompts import (
-    build_input_shield_system_prompt,
-    build_input_shield_user_prompt,
 )
 from app.schemas import ShieldOutput, SupportTicket
 
@@ -32,6 +29,7 @@ class InputShieldOutcome:
     execution: LLMExecutionMetadata | None
     error_type: str | None
     error_message: str | None
+    prompt_identity: PromptIdentity | None
 
 
 def _compose_logical_prompt(*, system_prompt: str | None, user_prompt: str) -> str:
@@ -76,8 +74,16 @@ def _normalize_llm_shield_output(output: ShieldOutput, ticket: SupportTicket) ->
 
 
 class InputShieldOperation:
-    def __init__(self, llm: LLMPort, max_prompt_chars: int) -> None:
+    def __init__(
+        self,
+        llm: LLMPort,
+        prompt_repository: PromptRepository,
+        prompt_ref: PromptRef,
+        max_prompt_chars: int,
+    ) -> None:
         self._llm = llm
+        self._prompt_repository = prompt_repository
+        self._prompt_ref = prompt_ref
         self._max_prompt_chars = max_prompt_chars
 
     async def execute(self, ticket: SupportTicket) -> InputShieldOutcome:
@@ -89,13 +95,20 @@ class InputShieldOperation:
                 execution=None,
                 error_type=None,
                 error_message=None,
+                prompt_identity=None,
             )
 
-        system_prompt = build_input_shield_system_prompt()
-        user_prompt = build_input_shield_user_prompt(ticket)
+        resolved = self._prompt_repository.resolve(
+            self._prompt_ref,
+            variables={
+                "customer_message": ticket.customer_message,
+                "customer_metadata": ticket.customer_metadata or {},
+                "order_account_metadata": ticket.order_account_metadata or {},
+            },
+        )
         logical_prompt = _compose_logical_prompt(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
+            system_prompt=resolved.system_prompt,
+            user_prompt=resolved.user_prompt,
         )
 
         if len(logical_prompt) > self._max_prompt_chars:
@@ -117,12 +130,13 @@ class InputShieldOperation:
                 execution=None,
                 error_type="GuardrailBlockedError",
                 error_message=guardrail_message,
+                prompt_identity=resolved.identity,
             )
 
         try:
             result = await self._llm.generate_structured(
-                system_prompt=system_prompt,
-                prompt=user_prompt,
+                system_prompt=resolved.system_prompt,
+                prompt=resolved.user_prompt,
                 response_schema=ShieldOutput,
             )
             normalized = _normalize_llm_shield_output(result.parsed, ticket)
@@ -132,6 +146,7 @@ class InputShieldOperation:
                 execution=result.execution,
                 error_type=None,
                 error_message=None,
+                prompt_identity=resolved.identity,
             )
         except (ModelOutputParsingError, UpstreamServiceError) as exc:
             return InputShieldOutcome(
@@ -151,4 +166,5 @@ class InputShieldOperation:
                 execution=None,
                 error_type=exc.__class__.__name__,
                 error_message=str(exc),
+                prompt_identity=resolved.identity,
             )

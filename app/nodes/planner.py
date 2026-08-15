@@ -87,6 +87,9 @@ def make_planner_node(
                 "plan_length": len(outcome.agent_state.plan),
                 "current_step_id": outcome.agent_state.current_step_id,
                 "step_titles": [step.title for step in outcome.agent_state.plan],
+                "prompt_id": outcome.prompt_identity.ref.prompt_id,
+                "prompt_revision": outcome.prompt_identity.ref.revision,
+                "prompt_content_hash": outcome.prompt_identity.content_hash,
             }
 
             logger.info(
@@ -112,6 +115,9 @@ def make_planner_node(
             "message": outcome.error_message or "",
             "latency_ms": latency_ms,
             "fallback_plan_used": True,
+            "prompt_id": outcome.prompt_identity.ref.prompt_id,
+            "prompt_revision": outcome.prompt_identity.ref.revision,
+            "prompt_content_hash": outcome.prompt_identity.content_hash,
         }
 
         error_type = outcome.error_type or "Exception"

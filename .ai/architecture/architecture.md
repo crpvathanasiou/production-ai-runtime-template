@@ -6,7 +6,7 @@ This document is the approved **target** architecture for the reusable template.
 
 **Approved target architecture** is the model below. Future work must move toward it.
 
-**Currently implemented in the seeded repository (after M1):**
+**Currently implemented in the seeded repository (after M2):**
 
 - FastAPI app with `/health` and `/version`
 - optional Redis ping in the health check
@@ -16,14 +16,17 @@ This document is the approved **target** architecture for the reusable template.
 - provider-neutral `LLMPort` (`app/application/ports/llm.py`)
 - `AsyncOpenAIWrapper` as the concrete OpenAI outbound adapter satisfying that boundary
 - explicit production composition in `app/composition.py` (`build_runtime_graph()`)
-- active LLM paths: LangGraph Node → Application Operation → `LLMPort` → `AsyncOpenAIWrapper` / OpenAI
-- prompt text still built in Python modules under `app/prompts/` (invoked by Application Operations; no prompt identity/revision/hash)
-- a seeded retrieval entrypoint / workflow seam (no repository-level knowledge corpus; no active retrieval backend; current placement in `execute_plan` unchanged by M1)
+- active LLM paths: LangGraph Node → Application Operation → `PromptRef` / `PromptRepository` → `ResolvedPrompt` → `LLMPort` → `AsyncOpenAIWrapper` / OpenAI
+- application-owned prompt lifecycle: `PromptRef`, `PromptIdentity`, `ResolvedPrompt`, `PromptRepository`
+- concrete baseline `LocalPromptRepository` over four immutable code-backed V1 definitions (`input-shield@1`, `triage@1`, `planner@1`, `response-drafting@1`)
+- Application Operations resolve explicit revisions; nodes copy safe prompt identity into orchestration metadata when an outcome exists
+- `LLMPort` remains prompt-lifecycle neutral (receives only rendered `system_prompt` / `prompt` / `response_schema`)
+- a seeded retrieval entrypoint / workflow seam (no repository-level knowledge corpus; no active retrieval backend; current placement in `execute_plan`)
 - LangSmith `@traceable` on selected calls and nodes
 
-**Not yet implemented (later readiness / deferred):** Prompt Identity / `PromptRepository`, `ExecutionContext`, `TelemetryPort`, controlled tool runtime, RAG backend, durable HITL, CI readiness closure, multiple providers. Do not document those as already implemented. M1 does **not** make the entire Template Readiness baseline complete.
+**Not yet implemented (later readiness / deferred):** `ExecutionContext`, `TelemetryPort` / application telemetry boundary, complete failed-attempt identity telemetry across provider exceptions that return no operation outcome, controlled tool runtime, RAG backend, durable HITL, CI readiness closure, multiple providers, remote prompt-management platform. Do not document those as already implemented. M2 does **not** make the entire Template Readiness baseline complete.
 
-GraphState remains outside Application Core. Prompt invocation for the four live LLM paths is application-owned.
+GraphState remains outside Application Core. Prompt identity and resolution for the four live LLM paths are application-owned.
 
 ## Canonical model
 
@@ -165,7 +168,7 @@ content_hash
 
 A portable `PromptRepository` is the application-owned store/lookup **port** for prompt content. A prompt-management product may later be an outbound adapter behind that port; it is not the architectural owner of prompt identity.
 
-Current seed: prompt strings live in `app/prompts/*.py` with no revision/hash identity.
+Current seed (after M2): `PromptRef` / `PromptIdentity` / `ResolvedPrompt` / `PromptRepository` exist under `app/application/prompts/`. `LocalPromptRepository` resolves four immutable code-backed V1 definitions. `content_hash` identifies the stored static system+user templates, not runtime customer values. Application Operations resolve explicit revisions; `LLMPort` and the OpenAI adapter remain prompt-lifecycle agnostic. Nodes expose safe identity metadata on successful/handled outcomes. Full failed-attempt correlation when a provider call raises without returning an operation outcome belongs to later `ExecutionContext` / telemetry work.
 
 ### Application-owned telemetry boundary
 
@@ -193,7 +196,7 @@ MCP / REST / DB tool adapters
 
 The LLM cannot perform side effects by itself. Any tool/side effect is an application-authorized `ToolRequest` that yields a typed `ToolResult`. Future execution boundaries and tool adapters are separate from these contracts. A generic `ControlledToolExecutor` implementation is deferred. MCP / REST / DB tool adapters are deferred.
 
-Current seed: no tool-request contracts; `execute_plan` retains retrieval-shaped PlanStep orchestration through the seeded retrieval entrypoint (currently no active retrieval source; placement unchanged by M1). Response drafting generation is delegated to `ResponseDraftingOperation` via `LLMPort`.
+Current seed: no tool-request contracts; `execute_plan` retains retrieval-shaped PlanStep orchestration through the seeded retrieval entrypoint (currently no active retrieval source). Response drafting generation is delegated to `ResponseDraftingOperation` via `PromptRepository` → `ResolvedPrompt` → `LLMPort`.
 
 ### FastAPI as delivery adapter
 

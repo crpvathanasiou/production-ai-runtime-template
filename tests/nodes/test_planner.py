@@ -9,6 +9,7 @@ import pytest
 import app.nodes.planner as planner_module
 from app.application.planner import PlannerOutcome
 from app.application.ports.llm import LLMExecutionMetadata
+from app.application.prompts import PromptIdentity, PromptRef
 from app.graph_state import GraphState
 from app.nodes.planner import make_planner_node
 from app.schemas import (
@@ -17,6 +18,11 @@ from app.schemas import (
     SupportAgentState,
     SupportTicket,
     TriageOutput,
+)
+
+_PROMPT_IDENTITY = PromptIdentity(
+    ref=PromptRef(prompt_id="planner", revision=1),
+    content_hash="planner-hash",
 )
 
 
@@ -112,17 +118,27 @@ def _fallback_plan() -> SupportAgentState:
     )
 
 
+def _outcome(
+    *,
+    agent_state: SupportAgentState,
+    fallback_used: bool = False,
+    execution: LLMExecutionMetadata | None = None,
+    error_type: str | None = None,
+    error_message: str | None = None,
+) -> PlannerOutcome:
+    return PlannerOutcome(
+        agent_state=agent_state,
+        execution=execution,
+        fallback_used=fallback_used,
+        error_type=error_type,
+        error_message=error_message,
+        prompt_identity=_PROMPT_IDENTITY,
+    )
+
+
 @pytest.mark.asyncio
 async def test_planner_node_missing_shield_blocked():
-    operation = FakePlannerOperation(
-        PlannerOutcome(
-            agent_state=_simple_plan(),
-            execution=None,
-            fallback_used=False,
-            error_type=None,
-            error_message=None,
-        )
-    )
+    operation = FakePlannerOperation(_outcome(agent_state=_simple_plan()))
     node = make_planner_node(operation, model_name="gpt-planner-test")
     state = GraphState(
         request_id="req-planner-001",
@@ -139,15 +155,7 @@ async def test_planner_node_missing_shield_blocked():
 
 @pytest.mark.asyncio
 async def test_planner_node_missing_triage_blocked():
-    operation = FakePlannerOperation(
-        PlannerOutcome(
-            agent_state=_simple_plan(),
-            execution=None,
-            fallback_used=False,
-            error_type=None,
-            error_message=None,
-        )
-    )
+    operation = FakePlannerOperation(_outcome(agent_state=_simple_plan()))
     node = make_planner_node(operation, model_name="gpt-planner-test")
     state = GraphState(
         request_id="req-planner-002",
@@ -166,12 +174,9 @@ async def test_planner_node_missing_triage_blocked():
 async def test_planner_node_normal_outcome_running():
     plan = _simple_plan()
     operation = FakePlannerOperation(
-        PlannerOutcome(
+        _outcome(
             agent_state=plan,
             execution=LLMExecutionMetadata(latency_ms=55.0, attempts=1),
-            fallback_used=False,
-            error_type=None,
-            error_message=None,
         )
     )
     node = make_planner_node(operation, model_name="gpt-planner-test")
@@ -193,6 +198,11 @@ async def test_planner_node_normal_outcome_running():
     assert meta["plan_length"] == 1
     assert meta["current_step_id"] == "step_draft_info_response"
     assert meta["step_titles"] == ["Draft informational response"]
+    assert meta["prompt_id"] == "planner"
+    assert meta["prompt_revision"] == 1
+    assert meta["prompt_content_hash"] == "planner-hash"
+    assert "system_prompt" not in meta
+    assert "user_prompt" not in meta
     assert len(operation.calls) == 1
 
 
@@ -226,12 +236,9 @@ async def test_planner_node_can_carry_retrieval_capable_plan_shape():
         current_step_id="step_retrieve_refund_policy",
     )
     operation = FakePlannerOperation(
-        PlannerOutcome(
+        _outcome(
             agent_state=plan,
             execution=LLMExecutionMetadata(latency_ms=10.0, attempts=1),
-            fallback_used=False,
-            error_type=None,
-            error_message=None,
         )
     )
     node = make_planner_node(operation, model_name="gpt-planner-test")
@@ -247,14 +254,17 @@ async def test_planner_node_can_carry_retrieval_capable_plan_shape():
     assert updated.workflow_outcome == "running"
     owners = [step.owner for step in updated.agent_state.plan]  # type: ignore[union-attr]
     assert "retrieval_agent" in owners
+    meta = updated.additional_metadata["planner"]
+    assert meta["prompt_id"] == "planner"
+    assert meta["prompt_revision"] == 1
+    assert meta["prompt_content_hash"] == "planner-hash"
 
 
 @pytest.mark.asyncio
 async def test_planner_node_fallback_outcome_needs_human_review():
     operation = FakePlannerOperation(
-        PlannerOutcome(
+        _outcome(
             agent_state=_fallback_plan(),
-            execution=None,
             fallback_used=True,
             error_type="UpstreamServiceError",
             error_message="Simulated planner failure",
@@ -280,6 +290,11 @@ async def test_planner_node_fallback_outcome_needs_human_review():
     assert err["error_type"] == "UpstreamServiceError"
     assert err["message"] == "Simulated planner failure"
     assert "latency_ms" in err
+    assert err["prompt_id"] == "planner"
+    assert err["prompt_revision"] == 1
+    assert err["prompt_content_hash"] == "planner-hash"
+    assert "system_prompt" not in err
+    assert "user_prompt" not in err
 
 
 @pytest.mark.asyncio

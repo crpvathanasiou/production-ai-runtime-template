@@ -1,8 +1,13 @@
-from app.schemas import ShieldOutput, SupportTicket
+"""Immutable code-backed Triage prompt definitions."""
 
+from __future__ import annotations
 
-def build_triage_system_prompt() -> str:
-    return """
+from app.application.prompts import PromptRef
+from app.prompts.local_repository import PromptDefinition
+
+TRIAGE_PROMPT_V1 = PromptDefinition(
+    ref=PromptRef(prompt_id="triage", revision=1),
+    system_template="""
     You are the Triage Analyzer for a customer support AI workflow.
 
     Your job is to analyze the incoming support request and return a structured triage result.
@@ -22,29 +27,24 @@ def build_triage_system_prompt() -> str:
     - Do not invent customer/account facts that were not provided.
     - Be conservative with escalation and human approval for refund, billing disputes, and account security issues.
     - reasoning_summary must be short and decision-focused.
-    """.strip()
-
-
-def build_triage_user_prompt(
-    ticket: SupportTicket,
-    shield_result: ShieldOutput,
-) -> str:
-    return f"""
+    """.strip(),
+    user_template="""
 
     Sanitized customer message:
     <<<SANITIZED_MESSAGE>>>
-    {shield_result.sanitized_message}
+    {sanitized_message}
     <<<END_SANITIZED_MESSAGE>>>
 
     Shield decision:
-    - decision: {shield_result.decision}
-    - risk_level: {shield_result.risk_level}
-    - categories: {shield_result.categories}
-    - should_route_to_human: {shield_result.should_route_to_human}
+    - decision: {shield_decision}
+    - risk_level: {shield_risk_level}
+    - categories: {shield_categories}
+    - should_route_to_human: {shield_should_route_to_human}
 
     Customer metadata:
-    {ticket.customer_metadata or {}}
+    {customer_metadata}
 
     Order/account metadata:
-    {ticket.order_account_metadata or {}}
-    """.strip()
+    {order_account_metadata}
+    """.strip(),
+)

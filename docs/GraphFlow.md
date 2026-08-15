@@ -36,37 +36,44 @@ input_shield_node
 ----------------------------------------------------------------------------------------------------------
 # 2. Με τις εσωτερικές συναρτήσεις ανά node
 
-Current LLM ownership (M1):
+Current LLM ownership (M2):
 
 ```text
 input_shield_node
   → InputShieldOperation
-  → existing prompt builders
+  → PromptRepository.resolve(input-shield@1)
+  → ResolvedPrompt
   → LLMPort
   → AsyncOpenAIWrapper
 
 triage_node
   → TriageOperation
-  → existing prompt builders
+  → PromptRepository.resolve(triage@1)
+  → ResolvedPrompt
   → LLMPort
   → AsyncOpenAIWrapper
 
 planner_node
   → PlannerOperation
-  → existing prompt builders
+  → PromptRepository.resolve(planner@1)
+  → ResolvedPrompt
   → LLMPort
   → AsyncOpenAIWrapper
 
 execute_plan_node response step
   → ResponseDraftingOperation
-  → existing prompt builders
+  → PromptRepository.resolve(response-drafting@1)
+  → ResolvedPrompt
   → LLMPort
   → AsyncOpenAIWrapper
 ```
 
 GraphState mutations and workflow routing remain on the node/orchestration side.
-Retrieval PlanStep execution remains in execute_plan (current seeded placement; unchanged by M1).
+Retrieval PlanStep execution remains in execute_plan (current seeded placement).
 ResponseDraftingOperation owns drafting generation only — not PlanStep orchestration.
+Application Operations own PromptRef resolution; nodes copy safe prompt identity
+(`prompt_id`, `prompt_revision`, `prompt_content_hash`) into `additional_metadata`
+when an operation outcome exists. Raw prompt content is not placed in metadata.
 
 START
   │
@@ -75,13 +82,15 @@ input_shield_node(state)
   │
   ├─ InputShieldOperation.execute(...)
   │    ├─ build_fail_fast_shield_output(ticket)
-  │    ├─ build_input_shield_prompt(ticket)
+  │    ├─ (else) PromptRepository.resolve(input-shield@1) → ResolvedPrompt
+  │    ├─ exact logical-prompt length check
   │    ├─ LLMPort → AsyncOpenAIWrapper.generate_structured(...)
   │    └─ normalization / expected-failure fallback
   └─ node writes:
        - state.shield_result
        - state.workflow_outcome
        - state.additional_metadata["input_shield"]
+         (safe prompt identity when a prompt was resolved)
 
   │
   ▼
@@ -95,21 +104,20 @@ route_after_input_shield(state)
 triage_node(state)
   │
   ├─ TriageOperation.execute(...)
-  │    ├─ build_triage_system_prompt()
-  │    ├─ build_triage_user_prompt(...)
+  │    ├─ PromptRepository.resolve(triage@1) → ResolvedPrompt
   │    └─ LLMPort → AsyncOpenAIWrapper.generate_structured(...)
   └─ node writes:
        - state.triage_result
        - state.workflow_outcome
        - state.additional_metadata["triage"]
+         (safe prompt identity on successful outcome)
 
   │
   ▼
 planner_node(state)
   │
   ├─ PlannerOperation.execute(...)
-  │    ├─ build_planner_system_prompt()
-  │    ├─ build_planner_user_prompt(...)
+  │    ├─ PromptRepository.resolve(planner@1) → ResolvedPrompt
   │    ├─ LLMPort → AsyncOpenAIWrapper.generate_structured(...)
   │    ├─ normalization
   │    └─ fallback plan [σε recoverable failure]
@@ -118,6 +126,7 @@ planner_node(state)
        - state.agent_state.current_step_id
        - state.workflow_outcome
        - state.additional_metadata["planner"]
+         (safe prompt identity on normal and handled fallback outcomes)
 
   │
   ▼
@@ -131,7 +140,7 @@ execute_plan_node(state)
   │
   ├─ loops through state.agent_state.plan
   │
-  ├─ for retrieval step (current seeded placement; unchanged by M1):
+  ├─ for retrieval step (current seeded placement):
   │    ├─ _build_retrieval_query(state, step)
   │    ├─ _execute_retrieval_step(state, step)
   │    │    └─ retrieve_relevant_documents(...)
@@ -140,8 +149,7 @@ execute_plan_node(state)
   ├─ for response step:
   │    ├─ _execute_response_step(state, step)
   │    │    ├─ ResponseDraftingOperation.execute(...)
-  │    │    │    ├─ build_response_drafting_system_prompt()
-  │    │    │    ├─ build_response_drafting_user_prompt(...)
+  │    │    │    ├─ PromptRepository.resolve(response-drafting@1) → ResolvedPrompt
   │    │    │    └─ LLMPort → AsyncOpenAIWrapper.generate_structured(...)
   │    │    └─ node maps draft into state.response_draft
   │    └─ _mark_step_completed(...) / _mark_step_failed(...)
@@ -157,6 +165,8 @@ execute_plan_node(state)
        - state.agent_state.current_step_id
        - state.workflow_outcome
        - state.additional_metadata["execute_plan"]
+       - state.additional_metadata["response_drafting"]
+         (safe prompt identity when drafting outcome exists)
 
   │
   ▼
@@ -230,15 +240,15 @@ FINALIZE
 --------------------------------------------------------------------------------------------------------
 # 4. Το πιο σύντομο diagram 
 
-input_shield_node → InputShieldOperation → LLMPort → AsyncOpenAIWrapper
+input_shield_node → InputShieldOperation → PromptRepository → ResolvedPrompt → LLMPort → AsyncOpenAIWrapper
    ↓
-triage_node → TriageOperation → LLMPort → AsyncOpenAIWrapper
+triage_node → TriageOperation → PromptRepository → ResolvedPrompt → LLMPort → AsyncOpenAIWrapper
    ↓
-planner_node → PlannerOperation → LLMPort → AsyncOpenAIWrapper
+planner_node → PlannerOperation → PromptRepository → ResolvedPrompt → LLMPort → AsyncOpenAIWrapper
    ↓
 execute_plan_node
-   ├─ _execute_retrieval_step()   (current seeded placement; unchanged by M1)
-   └─ _execute_response_step() → ResponseDraftingOperation → LLMPort → AsyncOpenAIWrapper
+   ├─ _execute_retrieval_step()   (current seeded placement)
+   └─ _execute_response_step() → ResponseDraftingOperation → PromptRepository → ResolvedPrompt → LLMPort → AsyncOpenAIWrapper
    ↓
 guardrails_node
    ↓
@@ -271,4 +281,3 @@ input_shield_node
 6. route_after_guardrails preserves upstream needs_human_review
 7. human_review_node treats upstream needs_human_review as review_required
 8. finalize_node closes the run
-

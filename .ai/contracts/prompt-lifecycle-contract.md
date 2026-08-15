@@ -29,7 +29,7 @@ content_hash
 optional variables / schema metadata where useful
 ```
 
-`content_hash` is computed from the resolved content the application will execute. It is application-owned evidence, not a vendor run id.
+`content_hash` is computed from the stored static prompt definition (system + user templates) the application resolves. It is application-owned evidence of the immutable revision, not a hash of final rendered customer values and not a vendor run id.
 
 ## Required lifecycle
 
@@ -53,7 +53,7 @@ Once a revision is published for use, its content for that `(prompt_id, revision
 
 ## Traceability
 
-Execution records at least:
+Production-relevant prompt execution must be attributable to at least:
 
 ```text
 prompt_id
@@ -61,7 +61,15 @@ revision
 content_hash
 ```
 
-so a run can be tied to the exact prompt that ran. Correlation belongs with `ExecutionContext` (`request_id`, `run_id`, optional `thread_id`); prompt identity is not a substitute for execution identity.
+so execution evidence can identify the exact immutable prompt revision that was resolved.
+
+### CURRENT RUNTIME (M2→M3 evidence)
+
+- Successful/handled M2 Application Operation outcomes carry `PromptIdentity`.
+- Triage/ResponseDrafting provider failures that return no outcome currently do not surface that identity into node error metadata.
+- This is a current M2→M3 evidence gap, not a redefinition of the normative requirement above.
+- `ExecutionContext` / application execution events / `TelemetryPort` will provide the cross-cutting mechanism for failed-attempt correlation.
+- `PromptIdentity` is not a substitute for execution identity.
 
 ## Evaluation linkage
 
@@ -79,12 +87,12 @@ Rollback means selecting a previously resolved `PromptRef` (an earlier immutable
 
 Resolution always takes an explicit `PromptRef` (or an application rule that selects one **before** execute). Defaulting to an unpinned moving head at execute time is out of contract.
 
-## SURFACE DISCREPANCY
+## CURRENT RUNTIME (factual)
 
-Seeded prompts live as Python string builders under `app/prompts/` with no `prompt_id` / `revision` / `content_hash`. That is current runtime fact, not this contract.
+Seeded prompts are immutable code-backed `PromptDefinition`s under `app/prompts/*_prompts.py` with explicit `PromptRef` revisions (`input-shield@1`, `triage@1`, `planner@1`, `response-drafting@1`). `LocalPromptRepository` resolves them to `ResolvedPrompt` carrying `content_hash`. Prompt identity remains Application-owned; Application Operations resolve `PromptRef`s; `LLMPort` and provider adapters stay prompt-lifecycle agnostic. Remote/vendor prompt hosting remains optional/deferred.
 
 ```text
 SURFACE DISCREPANCY
 ```
 
-if documentation of the lifecycle is treated as if the runtime already implements it.
+if documentation treats a remote prompt-management platform, moving aliases (`latest`/`production`), or full failed-attempt `ExecutionContext`/telemetry correlation as already required or already implemented for the baseline.

@@ -33,85 +33,106 @@ No `.ai/projects/<active-project>/` workspace. Only `_template` exists. Seeded C
 
 ## Current milestone
 
-M1 — Application LLM Execution Boundary
+M2 — Prompt Identity / Immutable Prompt Resolution
 
 Architecture: **APPROVED**
 
-Delivery structure: **ONE M1 / TWO INTERNAL CHECKPOINTS**
+Implementation:
 
-Implementation state:
+- `PromptRef` implemented
+- `PromptIdentity` implemented
+- `ResolvedPrompt` implemented
+- `PromptRepository` implemented
+- `LocalPromptRepository` implemented
+- four live immutable V1 definitions (`input-shield@1`, `triage@1`, `planner@1`, `response-drafting@1`)
+- four Application Operations use prompt resolution
+- one shared repository wired through `app/composition.py`
+- V1 hash regression evidence
+- safe identity in Application Operation outcomes
+- safe identity copied to node metadata where outcomes exist
+- documentation reconciled with live M2 prompt lifecycle
 
-- Internal Checkpoint 1 — complete / reviewed
-- Internal Checkpoint 2 runtime migration — complete / reviewed
-- documentation reconciliation — complete
-- final M1 validation — complete (commands below)
+**M2 status: IMPLEMENTATION + DOCS COMPLETE — NOT COMMITTED.**
 
-**M1 is NOT COMMITTED.** Git has not established the M1 boundary. Await ChatGPT final review before any M1 commit.
+Git has not established the M2 boundary. Await ChatGPT final M2 review before any M2 commit.
 
 ## Last approved milestone
 
-M0B (and Template Readiness governance integration as the pre-M1 documentation boundary)
+M1 — Application LLM Execution Boundary (committed / pushed; HEAD baseline for this work: `250f256`)
 
-## Current M1 architecture implemented
+## Current M2 architecture implemented
 
 ```text
 LangGraph Node
   → Application Operation
+  → PromptRef / PromptRepository
+  → ResolvedPrompt
   → LLMPort
   → AsyncOpenAIWrapper / OpenAI
 ```
 
 Explicit composition: `app/composition.py` (`build_runtime_graph()`)
 
-Live Application Operations:
+- one shared `LocalPromptRepository`
+- four immutable code-backed V1 `PromptDefinition`s
+- Application Operations own domain → prompt-variable preprocessing and `PromptRef` resolution
+- `LLMPort` remains prompt-lifecycle neutral
+- nodes do not resolve prompts; they copy only safe identity fields when an outcome exists
 
-- `InputShieldOperation`
-- `TriageOperation`
-- `PlannerOperation`
-- `ResponseDraftingOperation`
+## Known M2→M3 failure-traceability boundary
+
+For Triage and ResponseDrafting, prompt resolution occurs before provider execution. If the subsequent provider/model call raises and no Application Operation outcome is returned, current node error metadata does **not** contain prompt identity.
+
+This is intentional in M2. It is **not** an M2 architectural defect and does **not** mean prompt identity is absent from the architecture. The immutable prompt was resolved correctly; what remains missing is a cross-cutting execution-event/correlation mechanism that can record identity before/around an attempted provider call even when the operation raises.
+
+That belongs to **M3 / P0.3**: `ExecutionContext` + application execution events + `TelemetryPort`.
+
+M2 establishes immutable identity + resolution + result evidence. Full failed-attempt execution traceability remains dependent on M3. The normative prompt-traceability requirement remains unchanged; complete failed-attempt evidence is still BLOCKED on the M3 cross-cutting execution boundary.
 
 ## Latest validation
 
-Final M1 documentation-reconciliation validation (this prompt):
+Final M2 documentation-reconciliation validation (this prompt):
 
-- `poetry run pytest` — **74 passed**
+- `poetry run pytest` — **120 passed**
 - `poetry run pyright` — **0 errors**
-- `poetry run ruff check .` — **104 existing Ruff errors remain.** Pre-M1 baseline was 119; M1 introduced no new Ruff violations and reduced the count only through files already touched by M1. No unrelated repository-wide Ruff cleanup was performed.
+- `poetry run ruff check .` — **104 existing Ruff errors remain.** No unrelated repository-wide Ruff cleanup was performed.
+- Targeted Ruff over M2 structural/runtime + test files (excluding immutable V1 prompt-template string literals) — **passed**
+- Six `E501` findings remain inside immutable V1 prompt template text in `app/prompts/*_prompts.py`. Fixing them would mutate V1 content/`content_hash`; they are accepted prompt-content line-length debt, not new structural debt from this documentation pass.
 - `git diff --check` — **PASS**
 
-Committed HEAD at start of this prompt: `e8e213e` (`docs: integrate template readiness governance`). M1 runtime + docs remain uncommitted.
+Committed HEAD at start of this prompt: `250f256` (`feat: establish application LLM execution boundary`). M2 runtime + documentation remain uncommitted.
 
 ## Known baseline debt
 
-Classification: **pre-existing / later readiness**, not closed by M1.
+Classification: **pre-existing / later readiness**, not closed by M2.
 
 - repository-wide Ruff debt still exists (**104**); Template **READY** is **NOT** achieved
-- M1 introduced no new Ruff violations. New M1 files and the targeted migrated files passed Ruff checks; pre-existing Ruff debt remains in existing files such as `openai_wrapper.py` / `run_graph_once.py`.
-- Prompt Identity / Immutable Prompt Resolution — not implemented (likely next major readiness gap)
+- M2 structural/test files pass targeted Ruff; immutable V1 prompt-template `E501` lines remain by design of the seeded content
 - `ExecutionContext` — not implemented
 - `TelemetryPort` / application telemetry boundary — not implemented
+- complete failed-attempt identity telemetry (M2→M3 boundary above) — not implemented
 - controlled tool executor / RAG backend / durable HITL / CI readiness closure — not implemented
+- remote prompt-management platform — not required and not implemented
 - `.env.example` incomplete vs required `OPENAI_API_KEY`
 - `docker-compose.yaml` still uses `fastapi-prod-starter-*` names
 - `scripts/test.ps1`, `lint.ps1`, `typecheck.ps1` contain commented commands
 
-**SURFACE DISCREPANCY (narrowed after M1):** Application LLM boundary (`LLMPort` + Operations + composition) is implemented for active LLM paths. Remaining approved-target gaps that are still absent: Prompt Identity / `PromptRepository`, `ExecutionContext`, Telemetry, `ToolRequest`/`ToolResult` controlled execution, and other Template Readiness items. Do not treat Template READY as achieved.
+**SURFACE DISCREPANCY (narrowed after M2):** Application LLM boundary + Prompt Identity / Immutable Prompt Resolution are implemented for active LLM paths. Remaining approved-target gaps that are still absent: `ExecutionContext`, Telemetry, `ToolRequest`/`ToolResult` controlled execution, and other Template Readiness items. Do not treat Template READY as achieved.
 
 ## Continuation-impacting blockers
 
-None for ChatGPT final M1 review.
+None for ChatGPT final M2 review.
 
 ## Next approved action
 
-ChatGPT final M1 review → if approved, **ONE M1 Git boundary** (commit of reviewed M1 runtime + documentation).
+ChatGPT final M2 review → if approved, **ONE M2 Git boundary** (commit of reviewed M2 runtime + documentation).
 
 ## Forbidden / unapproved next actions
 
-- M1 commit without ChatGPT final review / explicit authorization
-- Prompt M2
+- M2 commit without ChatGPT final review / explicit authorization
+- Prompt M3
 - introducing `ExecutionContext`
 - introducing Telemetry / `TelemetryPort`
-- Prompt Identity / `PromptRepository` implementation
 - RAG implementation
 - unrelated readiness cleanup / repository-wide Ruff cleanup
 - unapproved architecture or scope changes

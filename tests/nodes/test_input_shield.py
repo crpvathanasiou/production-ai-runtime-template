@@ -9,9 +9,16 @@ import pytest
 import app.nodes.input_shield as input_shield_module
 from app.application.input_shield import InputShieldOutcome
 from app.application.ports.llm import LLMExecutionMetadata
+from app.application.prompts import PromptIdentity, PromptRef
 from app.graph_state import GraphState
 from app.nodes.input_shield import make_input_shield_node
 from app.schemas import ShieldOutput, SupportTicket
+
+_PROMPT_IDENTITY = PromptIdentity(
+    ref=PromptRef(prompt_id="input-shield", revision=1),
+    content_hash="input-shield-hash",
+)
+_IDENTITY_KEYS = ("prompt_id", "prompt_revision", "prompt_content_hash")
 
 
 class FakeInputShieldOperation:
@@ -39,6 +46,11 @@ def _state() -> GraphState:
     )
 
 
+def _assert_no_raw_prompt_content(meta: dict) -> None:
+    assert "system_prompt" not in meta
+    assert "user_prompt" not in meta
+
+
 @pytest.mark.asyncio
 async def test_input_shield_node_fail_fast_outcome():
     shield = ShieldOutput(
@@ -57,6 +69,7 @@ async def test_input_shield_node_fail_fast_outcome():
             execution=None,
             error_type=None,
             error_message=None,
+            prompt_identity=None,
         )
     )
     node = make_input_shield_node(operation, model_name="unused-model")
@@ -73,6 +86,9 @@ async def test_input_shield_node_fail_fast_outcome():
     assert meta["decision"] == "block"
     assert meta["risk_level"] == "high"
     assert "latency_ms" in meta
+    for key in _IDENTITY_KEYS:
+        assert key not in meta
+    _assert_no_raw_prompt_content(meta)
 
 
 @pytest.mark.asyncio
@@ -93,6 +109,7 @@ async def test_input_shield_node_llm_success():
             execution=LLMExecutionMetadata(latency_ms=42.5, attempts=2),
             error_type=None,
             error_message=None,
+            prompt_identity=_PROMPT_IDENTITY,
         )
     )
     node = make_input_shield_node(operation, model_name="gpt-shield-test")
@@ -108,7 +125,11 @@ async def test_input_shield_node_llm_success():
     assert meta["attempts"] == 2
     assert meta["decision"] == "allow"
     assert meta["risk_level"] == "low"
+    assert meta["prompt_id"] == "input-shield"
+    assert meta["prompt_revision"] == 1
+    assert meta["prompt_content_hash"] == "input-shield-hash"
     assert "guardrail_notes" not in meta
+    _assert_no_raw_prompt_content(meta)
 
 
 @pytest.mark.asyncio
@@ -129,6 +150,7 @@ async def test_input_shield_node_prompt_length_block():
             execution=None,
             error_type="GuardrailBlockedError",
             error_message="Prompt exceeds max allowed length.",
+            prompt_identity=_PROMPT_IDENTITY,
         )
     )
     node = make_input_shield_node(operation, model_name="gpt-shield-test")
@@ -142,6 +164,10 @@ async def test_input_shield_node_prompt_length_block():
     assert err["error_type"] == "GuardrailBlockedError"
     assert err["message"] == "Prompt exceeds max allowed length."
     assert "latency_ms" in err
+    assert err["prompt_id"] == "input-shield"
+    assert err["prompt_revision"] == 1
+    assert err["prompt_content_hash"] == "input-shield-hash"
+    _assert_no_raw_prompt_content(err)
 
     source = inspect.getsource(input_shield_module)
     assert "build_fail_fast_shield_output" not in source
@@ -168,6 +194,7 @@ async def test_input_shield_node_llm_failure_fallback():
             execution=None,
             error_type="UpstreamServiceError",
             error_message="provider down",
+            prompt_identity=_PROMPT_IDENTITY,
         )
     )
     node = make_input_shield_node(operation, model_name="gpt-shield-test")
@@ -181,3 +208,7 @@ async def test_input_shield_node_llm_failure_fallback():
     assert err["error_type"] == "UpstreamServiceError"
     assert err["message"] == "provider down"
     assert "latency_ms" in err
+    assert err["prompt_id"] == "input-shield"
+    assert err["prompt_revision"] == 1
+    assert err["prompt_content_hash"] == "input-shield-hash"
+    _assert_no_raw_prompt_content(err)

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.application.ports.llm import LLMExecutionMetadata, StructuredLLMResult
+from app.application.ports.llm import LLMExecutionMetadata
+from app.application.prompts import PromptIdentity, PromptRef
+from app.application.response_drafting import ResponseDraftingOutcome
 from app.graph_state import GraphState
 from app.nodes.execute_plan import make_execute_plan_node
 from app.schemas import (
@@ -16,12 +18,17 @@ from app.schemas import (
     TriageOutput,
 )
 
+_PROMPT_IDENTITY = PromptIdentity(
+    ref=PromptRef(prompt_id="response-drafting", revision=1),
+    content_hash="draft-hash",
+)
+
 
 class FakeResponseDraftingOperation:
     def __init__(
         self,
         *,
-        result: StructuredLLMResult[ResponseDrafting] | None = None,
+        result: ResponseDraftingOutcome | None = None,
         error: Exception | None = None,
     ) -> None:
         self._result = result
@@ -34,7 +41,7 @@ class FakeResponseDraftingOperation:
         ticket: SupportTicket,
         triage_result: TriageOutput,
         retrieved_documents: list[RetrievedDocument],
-    ) -> StructuredLLMResult[ResponseDrafting]:
+    ) -> ResponseDraftingOutcome:
         self.calls.append(
             {
                 "ticket": ticket,
@@ -65,14 +72,15 @@ def _draft_result(
     *,
     text: str,
     related: list[RetrievedDocument] | None = None,
-) -> StructuredLLMResult[ResponseDrafting]:
-    return StructuredLLMResult(
-        parsed=ResponseDrafting(
+) -> ResponseDraftingOutcome:
+    return ResponseDraftingOutcome(
+        output=ResponseDrafting(
             ticket_response=text,
             related_documents=related or [],
             unsupported_promises=False,
         ),
         execution=LLMExecutionMetadata(latency_ms=95.0, attempts=1),
+        prompt_identity=_PROMPT_IDENTITY,
     )
 
 
@@ -209,6 +217,10 @@ async def test_execute_plan_node_explicit_retrieval_returning_empty_fails():
 
     assert updated_state.workflow_outcome == "needs_human_review"
     assert len(operation.calls) == 1
+    meta = updated_state.additional_metadata["response_drafting"]
+    assert meta["prompt_id"] == "response-drafting"
+    assert meta["prompt_revision"] == 1
+    assert meta["prompt_content_hash"] == "draft-hash"
 
 
 @pytest.mark.asyncio
@@ -273,6 +285,11 @@ async def test_execute_plan_node_response_step_populates_response_draft():
     assert meta["latency_ms"] == 95.0
     assert meta["attempts"] == 1
     assert meta["used_documents"] == 1
+    assert meta["prompt_id"] == "response-drafting"
+    assert meta["prompt_revision"] == 1
+    assert meta["prompt_content_hash"] == "draft-hash"
+    assert "system_prompt" not in meta
+    assert "user_prompt" not in meta
     assert "execute_plan" in updated_state.additional_metadata
     assert len(operation.calls) == 1
 
@@ -328,6 +345,10 @@ async def test_execute_plan_node_response_without_retrieved_context():
         updated_state.agent_state.plan[0].result or ""
     ).lower()
     assert updated_state.workflow_outcome == "running"
+    meta = updated_state.additional_metadata["response_drafting"]
+    assert meta["prompt_id"] == "response-drafting"
+    assert meta["prompt_revision"] == 1
+    assert meta["prompt_content_hash"] == "draft-hash"
 
 
 @pytest.mark.asyncio
@@ -399,6 +420,7 @@ async def test_execute_plan_node_failed_response_step_routes_to_human_review():
     assert updated_state.agent_state.current_step_id == "step_human_review"
     assert updated_state.workflow_outcome == "needs_human_review"
     assert "execute_plan" in updated_state.additional_metadata
+    assert "response_drafting" not in updated_state.additional_metadata
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,11 @@ from app.application.input_shield import InputShieldOperation
 from app.application.planner import PlannerOperation
 from app.application.response_drafting import ResponseDraftingOperation
 from app.application.triage import TriageOperation
+from app.prompts.input_shield_prompts import INPUT_SHIELD_PROMPT_V1
+from app.prompts.local_repository import LocalPromptRepository
+from app.prompts.planner_prompts import PLANNER_PROMPT_V1
+from app.prompts.response_drafting_prompts import RESPONSE_DRAFTING_PROMPT_V1
+from app.prompts.triage_prompts import TRIAGE_PROMPT_V1
 
 
 class FakeWrapper:
@@ -83,6 +88,32 @@ def test_build_runtime_graph_wires_four_configured_adapters(monkeypatch):
     assert captured["triage_model_name"] == "model-input-shield"
     assert captured["planner_model_name"] == "model-planner"
     assert captured["response_drafting_model_name"] == "model-response-drafting"
+
+    repos = [
+        captured["input_shield_operation"]._prompt_repository,
+        captured["triage_operation"]._prompt_repository,
+        captured["planner_operation"]._prompt_repository,
+        captured["response_drafting_operation"]._prompt_repository,
+    ]
+    assert all(isinstance(repo, LocalPromptRepository) for repo in repos)
+    assert repos[0] is repos[1] is repos[2] is repos[3]
+
+    shared_repo = repos[0]
+    assert isinstance(shared_repo, LocalPromptRepository)
+    assert set(shared_repo._definitions.keys()) == {
+        INPUT_SHIELD_PROMPT_V1.ref,
+        TRIAGE_PROMPT_V1.ref,
+        PLANNER_PROMPT_V1.ref,
+        RESPONSE_DRAFTING_PROMPT_V1.ref,
+    }
+
+    assert captured["input_shield_operation"]._prompt_ref == INPUT_SHIELD_PROMPT_V1.ref
+    assert captured["triage_operation"]._prompt_ref == TRIAGE_PROMPT_V1.ref
+    assert captured["planner_operation"]._prompt_ref == PLANNER_PROMPT_V1.ref
+    assert (
+        captured["response_drafting_operation"]._prompt_ref
+        == RESPONSE_DRAFTING_PROMPT_V1.ref
+    )
 
 
 def test_build_runtime_graph_planner_fallback_to_input_shield(monkeypatch):

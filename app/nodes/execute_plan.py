@@ -3,12 +3,11 @@ from typing import Protocol
 
 from langsmith import traceable
 
-from app.application.ports.llm import StructuredLLMResult
+from app.application.response_drafting import ResponseDraftingOutcome
 from app.core.logging import bind_log_context, get_logger
 from app.graph_state import GraphState
 from app.schemas import (
     PlanStep,
-    ResponseDrafting,
     RetrievedDocument,
     SupportTicket,
     TriageOutput,
@@ -25,7 +24,7 @@ class SupportsResponseDraftingExecute(Protocol):
         ticket: SupportTicket,
         triage_result: TriageOutput,
         retrieved_documents: list[RetrievedDocument],
-    ) -> StructuredLLMResult[ResponseDrafting]: ...
+    ) -> ResponseDraftingOutcome: ...
 
 
 # This helper creates a fresh copy of a step and marks it as completed.
@@ -180,7 +179,7 @@ async def _execute_response_step(
         retrieved_documents=state.retrieved_documents or [],
     )
 
-    parsed = result.parsed
+    parsed = result.output
 
     # Save the draft into state.
     # This becomes the main input for the guardrails node.
@@ -193,6 +192,9 @@ async def _execute_response_step(
         "latency_ms": result.execution.latency_ms,
         "attempts": result.execution.attempts,
         "used_documents": len(parsed.related_documents),
+        "prompt_id": result.prompt_identity.ref.prompt_id,
+        "prompt_revision": result.prompt_identity.ref.revision,
+        "prompt_content_hash": result.prompt_identity.content_hash,
     }
 
     has_retrieved_context = bool(state.retrieved_documents)

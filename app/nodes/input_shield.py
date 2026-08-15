@@ -73,12 +73,17 @@ def make_input_shield_node(
             state.workflow_outcome = "blocked"
 
             latency_ms = round((time.perf_counter() - started) * 1000, 2)
-            state.additional_metadata["input_shield_error"] = {
+            error_meta: dict = {
                 "request_id": request_id,
                 "error_type": outcome.error_type or "GuardrailBlockedError",
                 "message": outcome.error_message or "",
                 "latency_ms": latency_ms,
             }
+            if outcome.prompt_identity is not None:
+                error_meta["prompt_id"] = outcome.prompt_identity.ref.prompt_id
+                error_meta["prompt_revision"] = outcome.prompt_identity.ref.revision
+                error_meta["prompt_content_hash"] = outcome.prompt_identity.content_hash
+            state.additional_metadata["input_shield_error"] = error_meta
 
             logger.warning(
                 "input_shield.guardrail_blocked",
@@ -95,12 +100,19 @@ def make_input_shield_node(
             state.workflow_outcome = "needs_human_review"
 
             latency_ms = round((time.perf_counter() - started) * 1000, 2)
-            state.additional_metadata["input_shield_error"] = {
+            fallback_meta: dict = {
                 "request_id": request_id,
                 "error_type": outcome.error_type or "UpstreamServiceError",
                 "message": outcome.error_message or "",
                 "latency_ms": latency_ms,
             }
+            if outcome.prompt_identity is not None:
+                fallback_meta["prompt_id"] = outcome.prompt_identity.ref.prompt_id
+                fallback_meta["prompt_revision"] = outcome.prompt_identity.ref.revision
+                fallback_meta["prompt_content_hash"] = (
+                    outcome.prompt_identity.content_hash
+                )
+            state.additional_metadata["input_shield_error"] = fallback_meta
 
             logger.error(
                 "input_shield.recovered_error",
@@ -120,7 +132,7 @@ def make_input_shield_node(
         latency_ms = execution.latency_ms if execution is not None else 0.0
         attempts = execution.attempts if execution is not None else 0
 
-        state.additional_metadata["input_shield"] = {
+        success_meta: dict = {
             "request_id": request_id,
             "model_name": model_name,
             "latency_ms": latency_ms,
@@ -128,6 +140,11 @@ def make_input_shield_node(
             "decision": outcome.output.decision,
             "risk_level": outcome.output.risk_level,
         }
+        if outcome.prompt_identity is not None:
+            success_meta["prompt_id"] = outcome.prompt_identity.ref.prompt_id
+            success_meta["prompt_revision"] = outcome.prompt_identity.ref.revision
+            success_meta["prompt_content_hash"] = outcome.prompt_identity.content_hash
+        state.additional_metadata["input_shield"] = success_meta
 
         logger.info(
             "input_shield.completed",

@@ -7,7 +7,7 @@ steps and updates state.
 
 * reads `state.agent_state.plan`
 * executes steps serially
-* for a `retrieval_agent` step (current seeded placement; unchanged by M1):
+* for a `retrieval_agent` step (current seeded placement):
   * builds a retrieval query
   * invokes the retrieval entrypoint
   * stores returned documents in `state.retrieved_documents`
@@ -17,10 +17,11 @@ steps and updates state.
 * for a `response_agent` step:
   * orchestrates the response PlanStep
   * delegates drafting generation to `ResponseDraftingOperation`
-    (`ResponseDraftingOperation` → `LLMPort` → provider adapter)
+    (`ResponseDraftingOperation` → `PromptRepository` → `ResolvedPrompt` → `LLMPort` → provider adapter)
   * with retrieved evidence → `"Drafted grounded customer response."`
   * without retrieved evidence → `"Drafted customer response without retrieved context."`
   * maps the draft into `state.response_draft`
+  * copies safe prompt identity into metadata when a drafting outcome exists
 * updates step `status` / `result` / `error`
 * leaves `human` steps pending (not executed here); `current_step_id` points to the next pending step
 * if any step failed → `workflow_outcome = "needs_human_review"`
@@ -33,27 +34,32 @@ steps and updates state.
 execute_plan
   → response PlanStep orchestration
   → ResponseDraftingOperation
+  → PromptRepository
+  → ResolvedPrompt
   → LLMPort
   → provider
 ```
 
 **ResponseDraftingOperation owns:**
 
-* drafting prompt invocation
+* immutable PromptRef resolution
+* domain → prompt-variable preprocessing
 * typed LLM generation
+* `PromptIdentity` on the drafting outcome
 
 **execute_plan still owns:**
 
-* retrieval-shaped PlanStep execution (current seeded placement; unchanged by M1)
+* retrieval-shaped PlanStep execution (current seeded placement)
 * response/human PlanStep status transitions
 * `retrieved_documents` state
 * `response_draft` state mapping
+* safe prompt-identity metadata copy when an outcome exists
 * failure marking
 * next-step computation
 * `workflow_outcome`
 
 Do **not** treat retrieval as permanently owned by LangGraph — only as the
-current seeded placement left unchanged by M1.
+current seeded placement.
 
 ## Current baseline
 

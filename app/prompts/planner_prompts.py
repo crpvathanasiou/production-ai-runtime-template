@@ -1,8 +1,13 @@
-from app.schemas import ShieldOutput, SupportTicket, TriageOutput
+"""Immutable code-backed Planner prompt definitions."""
 
+from __future__ import annotations
 
-def build_planner_system_prompt() -> str:
-    return """
+from app.application.prompts import PromptRef
+from app.prompts.local_repository import PromptDefinition
+
+PLANNER_PROMPT_V1 = PromptDefinition(
+    ref=PromptRef(prompt_id="planner", revision=1),
+    system_template="""
     You are the Planner node in a customer support agent workflow.
 
     Your job is to create a concise, executable plan based on:
@@ -44,44 +49,36 @@ def build_planner_system_prompt() -> str:
     - retrieval_agent remains a valid owner for a future project that activates retrieval.
 
     Return only structured output matching the provided schema.
-    """.strip()
-
-
-def build_planner_user_prompt(
-    *,
-    ticket: SupportTicket,
-    shield_result: ShieldOutput,
-    triage_result: TriageOutput,
-) -> str:
-    return f"""
+    """.strip(),
+    user_template="""
     Create an execution plan for this support case.
 
     Customer message:
     <<<CUSTOMER_MESSAGE>>>
-    {ticket.customer_message}
+    {customer_message}
     <<<END_CUSTOMER_MESSAGE>>>
 
     Customer metadata:
-    {ticket.customer_metadata or {}}
+    {customer_metadata}
 
     Order/account metadata:
-    {ticket.order_account_metadata or {}}
+    {order_account_metadata}
 
     Shield result:
-    - decision: {shield_result.decision}
-    - risk_level: {shield_result.risk_level}
-    - categories: {shield_result.categories}
-    - should_route_to_human: {shield_result.should_route_to_human}
-    - reasoning: {shield_result.reasoning}
+    - decision: {shield_decision}
+    - risk_level: {shield_risk_level}
+    - categories: {shield_categories}
+    - should_route_to_human: {shield_should_route_to_human}
+    - reasoning: {shield_reasoning}
 
     Triage result:
-    - issue_category: {triage_result.issue_category}
-    - intent: {triage_result.intent}
-    - urgency: {triage_result.urgency}
-    - customer_tone: {triage_result.customer_tone}
-    - requires_escalation: {triage_result.requires_escalation}
-    - requires_human_approval: {triage_result.requires_human_approval}
-    - reasoning_summary: {triage_result.reasoning_summary}
+    - issue_category: {triage_issue_category}
+    - intent: {triage_intent}
+    - urgency: {triage_urgency}
+    - customer_tone: {triage_customer_tone}
+    - requires_escalation: {triage_requires_escalation}
+    - requires_human_approval: {triage_requires_human_approval}
+    - reasoning_summary: {triage_reasoning_summary}
 
     Plan design guidance:
     - Current baseline has no active retrieval source; do not include retrieval_agent by default.
@@ -93,4 +90,5 @@ def build_planner_user_prompt(
     - retrieval_agent remains allowed for a future activated retrieval project.
 
     Return a structured SupportAgentState.
-    """.strip()
+    """.strip(),
+)
