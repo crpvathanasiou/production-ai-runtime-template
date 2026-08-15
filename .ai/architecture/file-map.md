@@ -283,6 +283,7 @@ Persistent human/AI engineering continuity layer. **One** shared tool-neutral wo
 | `README.md` | Session entry point |
 | `quick-start.md` | Template project bootstrap |
 | `handoff.md` | Shared continuation state (next approved action) |
+| `architecture/template-readiness.md` | Normative template-level finish-line / readiness authority |
 | `architecture/*` | Stable template architecture, file map, deferred register |
 | `contracts/` | Agent behaviour, prompt lifecycle, tool-execution contracts |
 | `engineering/` | Principles, workflow, delivery method, testing, evaluation, security, documentation protocol |
@@ -290,7 +291,23 @@ Persistent human/AI engineering continuity layer. **One** shared tool-neutral wo
 | `projects/` | Project workspaces; `_template` only until an assignment is created |
 | `skills/` | Recurring review/planning procedures (not runtime) |
 
-**Role:** engineering / governance (not runtime)
+### `architecture/template-readiness.md` ownership
+
+**Owns:**
+
+- definition of template READY;
+- mandatory readiness capability set;
+- readiness gates;
+- mandatory vs deferred / project-specific distinction.
+
+**Does not own:**
+
+- current milestone;
+- Git state;
+- current bugs;
+- temporary migration state.
+
+`.ai/` role: engineering / governance (not runtime)
 
 **Must not introduce:** tool-private handoff/status files, empty placeholder trees, runtime code, or mutable status duplicated into architecture docs
 

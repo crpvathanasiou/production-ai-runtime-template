@@ -14,6 +14,7 @@ Do not use a single global ranking. Authority is by concern:
 | --- | --- |
 | Architecture invariants | [`architecture/architecture-rules.md`](architecture/architecture-rules.md) |
 | Canonical architecture | [`architecture/architecture.md`](architecture/architecture.md) |
+| Template readiness / finish line | [`architecture/template-readiness.md`](architecture/template-readiness.md) |
 | Contract domains | [`contracts/`](contracts/) |
 | Engineering policies / procedures | [`engineering/`](engineering/) |
 | Operational strategy | [`operations/`](operations/) |
@@ -23,6 +24,8 @@ Do not use a single global ranking. Authority is by concern:
 | Intended delivery path | `projects/<project>/delivery-plan.md` |
 | Project execution ledger | `projects/<project>/implementation-status.md` |
 | **What am I allowed to do next?** | [`.ai/handoff.md`](handoff.md) only |
+
+[`architecture/template-readiness.md`](architecture/template-readiness.md) is the explicit authority for **TEMPLATE READY**, mandatory readiness gates, and template finish-line criteria. It does not replace handoff for continuation decisions.
 
 Stable template knowledge changes only when the reusable template changes. Project knowledge must not silently become template rules. Handoff owns only current continuation state; it does not redefine architecture or prove that a Git commit exists (Git is factual for commits).
 
@@ -68,6 +71,7 @@ A new session should **not** read every `.ai/` file.
 
 1. `.ai/README.md` (this file)
 2. `.ai/handoff.md`
-3. active project documents when present
-4. relevant architecture, contracts, engineering, operations
-5. relevant skill
+3. `.ai/architecture/template-readiness.md` when template readiness / overall finish-line reasoning is relevant
+4. active project documents when present
+5. relevant architecture, contracts, engineering, operations
+6. relevant skill

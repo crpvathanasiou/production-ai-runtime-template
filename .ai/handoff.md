@@ -6,6 +6,8 @@ This file is the only authority for **what am I allowed to do next?**
 
 It does **not** own architecture, project decision rationale, or factual proof that a Git commit exists. Git is authoritative for HEAD, commit hashes, working-tree state, and milestone Git boundaries.
 
+Template readiness / finish-line authority lives in [`architecture/template-readiness.md`](architecture/template-readiness.md).
+
 ```text
 IMPLEMENTED  → workflow / documentation state (this file may record)
 APPROVED     → governance / documentation state (this file may record)
@@ -31,57 +33,65 @@ No `.ai/projects/<active-project>/` workspace. Only `_template` exists. Seeded C
 
 ## Current milestone
 
-M0B approved.
+M1 — Application LLM Execution Boundary
 
-M0B is documentation/governance only.
+Architecture: **APPROVED**
 
-M0B is implemented, reviewed, and approved. It is **not** committed. The approved M0B milestone must now be established as a clean Git boundary before M1 may begin.
+Delivery structure: **ONE M1 / TWO INTERNAL CHECKPOINTS**
+
+Template Readiness governance integration: established as the required pre-M1 documentation boundary.
 
 ## Last approved milestone
 
-M0B
+M0B (and Template Readiness governance integration as the pre-M1 documentation boundary)
+
+## Current implementation position
+
+Internal Checkpoint 1 / Prompt 1 — correction/review cycle
+
+- Prompt 2: **NOT YET AUTHORIZED**
+- Internal Checkpoint 2: **NOT YET AUTHORIZED**
 
 ## Latest validation
 
-Results from the M0B correction-only run (seeded runtime; M0B did not change Python/tests/config):
+Factual pre-M1 runtime baseline (before Prompt-1 runtime work):
 
-- `poetry run ruff check .` — **fail**, 127 errors (app/, tests/, scripts/)
-- `poetry run pyright` — **fail**, 1 error: `app/nodes/input_shield.py:157` (`T@generate_structured` not assignable to `ShieldOutput`)
-- `poetry run pytest` — **pass**, 23 tests
+- `poetry run pytest` — **31 passed**
+- `poetry run pyright` — **1 known M1-related error** at `app/nodes/input_shield.py:157`
+- `poetry run ruff check .` — **119 existing errors**
+
+Do not treat uncommitted Prompt-1 results as an approved milestone result yet.
 
 ## Known baseline debt
 
-Classification: **pre-existing seeded-runtime condition**, not addressed by M0 documentation/governance work.
+Classification: **pre-existing seeded-runtime condition**, not addressed by documentation/governance work alone.
 
-M0 complete does **not** mean runtime quality gates are clean.
-
-Also unchanged (out of M0B scope):
+Also unchanged (out of current governance scope unless a later approved milestone says otherwise):
 
 - `.env.example` incomplete vs required `OPENAI_API_KEY`
 - `docker-compose.yaml` still uses `fastapi-prod-starter-*` names
 - `scripts/test.ps1`, `lint.ps1`, `typecheck.ps1` contain commented commands
 
-**SURFACE DISCREPANCY (docs vs runtime, already recorded in M0A architecture):** target ports/adapters, `ExecutionContext`, prompt identity, and `ToolRequest`/`ToolResult` are documented as approved target; seeded `app/` does not implement them.
+**SURFACE DISCREPANCY (docs vs runtime):** target ports/adapters, `ExecutionContext`, prompt identity, and `ToolRequest`/`ToolResult` are documented as approved target; seeded `app/` does not fully implement them yet. M1 Internal Checkpoint 1 begins the application LLM boundary only.
 
 ## Continuation-impacting blockers
 
-- The approved M0B Git milestone boundary has not yet been established.
-- M1 must not begin until the approved M0B files are committed and a clean Git boundary is verified.
-- Seeded Ruff/Pyright failures remain; do not “fix” them in a docs milestone
+None for starting/completing the authorized Prompt-1 correction/review cycle.
+
+Prompt 2 and Internal Checkpoint 2 remain unauthorized until ChatGPT review explicitly allows them.
 
 ## Next approved action
 
-Establish or verify the approved M0B Git milestone boundary.
-
-After that boundary exists and the working tree is clean, M1 planning may begin only when explicitly authorized.
+Complete/review M1 Internal Checkpoint 1 / Prompt 1 correction → ChatGPT review → only then authorize Prompt 2.
 
 ## Forbidden / unapproved next actions
 
-- M1 (until the approved M0B Git milestone boundary exists and the working tree is clean)
-- runtime implementation / runtime changes
-- M1 implementation
+- Prompt 2 before ChatGPT review / explicit authorization
+- Internal Checkpoint 2
+- Prompt M2
+- introducing `ExecutionContext`
+- introducing Telemetry / `TelemetryPort`
+- RAG implementation
+- unrelated cleanup
 - unapproved architecture or scope changes
-- activating deferred capabilities
-- unrelated documentation changes
-- creating an active project workspace unless a later approved milestone says to
 - tool-specific parallel handoff/status files
