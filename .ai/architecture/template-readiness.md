@@ -650,6 +650,56 @@ Production-grade means the required system properties are intentional, measurabl
 
 ---
 
+## 7.4 Progressive Capability Activation / Simple-Path Guarantee
+
+The reusable template MUST preserve a simple path for simple projects.
+
+Core principle:
+
+simple project
+→ simple path
+
+complex project
+→ activate only the capabilities that the actual requirements justify
+
+NOT:
+
+every project
+→ full enterprise stack
+
+A project that does not need:
+
+- LangGraph;
+- RAG;
+- persistence;
+- tools;
+- queues;
+- HITL;
+- vector search;
+- multi-provider routing;
+- advanced telemetry;
+- cloud infrastructure;
+
+must not be forced to configure, understand, instantiate, or depend on them.
+
+Unused capabilities must be optional, ignorable, or removable without
+architectural surgery.
+
+A simple FastAPI + Application Operation + LLMPort use case must remain possible
+without activating unrelated enterprise capabilities.
+
+A project-specific capability becomes active only through:
+
+real requirement
+→ architecture decision
+→ explicit implementation scope
+
+If a simple project requires understanding or configuring the full production
+stack before useful implementation can begin, the template has failed its
+reusability objective.
+
+---
+
 # 8. Architectural tripwires and stop conditions
 
 The following patterns are strong warning signals.
@@ -2189,16 +2239,18 @@ Before declaring READY, answer all of these.
 32. Are setup/config examples reusable rather than seed-specific?
 33. Can a new session understand architecture and deferred capabilities without chat history?
 34. Can a new project be started without mandatory cleanup/refactoring of the template?
+35. Can a simple project use the template without configuring, understanding,
+    or instantiating unrelated advanced capabilities?
 
 ## Agent decision quality
 
-35. Can a future agent explain the problem this template is solving, not only list its components?
-36. Can a future agent distinguish an approved invariant from a current implementation detail?
-37. Is there a documented path for challenging an approved rule with evidence rather than silently overriding it?
-38. Are architectural tripwires explicit enough to detect common forms of coupling and abstraction theatre?
-39. Can a future agent choose between two valid designs using an explicit priority hierarchy?
-40. Can a future agent identify when `KEEP` is better than introducing a new abstraction?
-41. Can a future agent surface a missing readiness capability without automatically implementing it?
+36. Can a future agent explain the problem this template is solving, not only list its components?
+37. Can a future agent distinguish an approved invariant from a current implementation detail?
+38. Is there a documented path for challenging an approved rule with evidence rather than silently overriding it?
+39. Are architectural tripwires explicit enough to detect common forms of coupling and abstraction theatre?
+40. Can a future agent choose between two valid designs using an explicit priority hierarchy?
+41. Can a future agent identify when `KEEP` is better than introducing a new abstraction?
+42. Can a future agent surface a missing readiness capability without automatically implementing it?
 
 If any mandatory readiness question is **NO**, the corresponding mandatory gate is BLOCKED and the template is not READY.
 
